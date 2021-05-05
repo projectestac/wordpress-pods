@@ -1184,6 +1184,9 @@ class PodsAdmin {
 
 		if ( ! empty( $callouts['friends_2020'] ) ) {
 ?>
+		<!--
+		// XTEC ************ ELIMINAT - hide container
+		// 2020-05- @nacho
 		<div class="pods-admin_friends-callout_container">
 			<?php if ( ! $force_callouts ) : ?>
 				<a href="<?php echo esc_url( add_query_arg( 'pods_callout_dismiss', 'friends_2020' ) ); ?>" class="pods-admin_friends-callout_close">
@@ -1202,6 +1205,8 @@ class PodsAdmin {
 				</div>
 			</div>
 		</div>
+		//************ FI
+		-->
 <?php
 		}
 	}
