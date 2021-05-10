@@ -177,6 +177,13 @@ class PodsInit {
 			return;
 		}
 
+		// XTEC ************ AFEGIT - Hidden self-promotion content
+		// 2021.05.10 @aginard
+		if ( ! is_xtec_super_admin() ) {
+			return ;
+		}
+		// ************ FI
+
 		global $pagenow;
 
 		// Pods admin pages or plugins/update page only.
