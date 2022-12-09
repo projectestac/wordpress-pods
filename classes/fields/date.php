@@ -1,5 +1,4 @@
 <?php
-require_once PODS_DIR . 'classes/fields/datetime.php';
 
 /**
  * @package Pods\Fields
@@ -41,6 +40,7 @@ class PodsField_Date extends PodsField_DateTime {
 	 */
 	public function setup() {
 
+		static::$group = __( 'Date / Time', 'pods' );
 		static::$label = __( 'Date', 'pods' );
 	}
 
@@ -50,15 +50,6 @@ class PodsField_Date extends PodsField_DateTime {
 	public function options() {
 
 		$options = array(
-			static::$type . '_repeatable'       => array(
-				'label'             => __( 'Repeatable Field', 'pods' ),
-				'default'           => 0,
-				'type'              => 'boolean',
-				'help'              => __( 'Making a field repeatable will add controls next to the field which allows users to Add/Remove/Reorder additional values. These values are saved in the database as an array, so searching and filtering by them may require further adjustments".', 'pods' ),
-				'boolean_yes_label' => '',
-				'dependency'        => true,
-				'developer_mode'    => true,
-			),
 			static::$type . '_type'             => array(
 				'label'      => __( 'Date Format Type', 'pods' ),
 				'default'    => 'format',
@@ -70,6 +61,7 @@ class PodsField_Date extends PodsField_DateTime {
 					'format' => __( 'Predefined format', 'pods' ),
 					'custom' => __( 'Custom format', 'pods' ),
 				),
+				'pick_show_select_text' => 0,
 				'dependency' => true,
 			),
 			static::$type . '_format_custom'    => array(
@@ -109,6 +101,7 @@ class PodsField_Date extends PodsField_DateTime {
 					'fjsy'      => date_i18n( 'F jS, Y' ),
 					'y'         => date_i18n( 'Y' ),
 				),
+				'pick_show_select_text' => 0,
 				'dependency' => true,
 			),
 			static::$type . '_year_range_custom' => array(
@@ -126,12 +119,12 @@ class PodsField_Date extends PodsField_DateTime {
 				),
 			),
 			static::$type . '_allow_empty'      => array(
-				'label'   => __( 'Allow empty value?', 'pods' ),
+				'label'   => __( 'Allow empty value', 'pods' ),
 				'default' => 1,
 				'type'    => 'boolean',
 			),
 			static::$type . '_html5'            => array(
-				'label'   => __( 'Enable HTML5 Input Field?', 'pods' ),
+				'label'   => __( 'Enable HTML5 Input Field', 'pods' ),
 				'default' => apply_filters( 'pods_form_ui_field_html5', 0, static::$type ),
 				'type'    => 'boolean',
 			),

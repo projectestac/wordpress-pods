@@ -30,7 +30,8 @@ class PodsField_Email extends PodsField {
 	 */
 	public function setup() {
 
-		self::$label = __( 'E-mail', 'pods' );
+		static::$group = __( 'Text', 'pods' );
+		static::$label = __( 'E-mail', 'pods' );
 	}
 
 	/**
@@ -39,15 +40,6 @@ class PodsField_Email extends PodsField {
 	public function options() {
 
 		$options = array(
-			static::$type . '_repeatable'  => array(
-				'label'             => __( 'Repeatable Field', 'pods' ),
-				'default'           => 0,
-				'type'              => 'boolean',
-				'help'              => __( 'Making a field repeatable will add controls next to the field which allows users to Add/Remove/Reorder additional values. These values are saved in the database as an array, so searching and filtering by them may require further adjustments".', 'pods' ),
-				'boolean_yes_label' => '',
-				'dependency'        => true,
-				'developer_mode'    => true,
-			),
 			static::$type . '_max_length'  => array(
 				'label'   => __( 'Maximum Length', 'pods' ),
 				'default' => 255,
@@ -55,7 +47,7 @@ class PodsField_Email extends PodsField {
 				'help'    => __( 'Set to -1 for no limit', 'pods' ),
 			),
 			static::$type . '_html5'       => array(
-				'label'   => __( 'Enable HTML5 Input Field?', 'pods' ),
+				'label'   => __( 'Enable HTML5 Input Field', 'pods' ),
 				'default' => apply_filters( 'pods_form_ui_field_html5', 0, static::$type ),
 				'type'    => 'boolean',
 			),
@@ -94,16 +86,14 @@ class PodsField_Email extends PodsField {
 	 */
 	public function input( $name, $value = null, $options = null, $pod = null, $id = null ) {
 
-		$options         = (array) $options;
+		$options         = ( is_array( $options ) || is_object( $options ) ) ? $options : (array) $options;
 		$form_field_type = PodsForm::$field_type;
 
-		if ( is_array( $value ) ) {
-			$value = implode( ' ', $value );
-		}
+		$value = $this->normalize_value_for_input( $value, $options );
 
 		$field_type = 'email';
 
-		if ( isset( $options['name'] ) && false === PodsForm::permission( static::$type, $options['name'], $options, null, $pod, $id ) ) {
+		if ( isset( $options['name'] ) && ! pods_permission( $options ) ) {
 			if ( pods_v( 'read_only', $options, false ) ) {
 				$options['readonly'] = true;
 
@@ -117,7 +107,16 @@ class PodsField_Email extends PodsField {
 			$field_type = 'text';
 		}
 
-		pods_view( PODS_DIR . 'ui/fields/' . $field_type . '.php', compact( array_keys( get_defined_vars() ) ) );
+		if ( ! empty( $options['disable_dfv'] ) ) {
+			return pods_view( PODS_DIR . 'ui/fields/email.php', compact( array_keys( get_defined_vars() ) ) );
+		}
+
+		$type = pods_v( 'type', $options, static::$type );
+
+		$args = compact( array_keys( get_defined_vars() ) );
+		$args = (object) $args;
+
+		$this->render_input_script( $args );
 	}
 
 	/**
@@ -160,7 +159,7 @@ class PodsField_Email extends PodsField {
 	 */
 	public function pre_save( $value, $id = null, $name = null, $options = null, $fields = null, $pod = null, $params = null ) {
 
-		$options = (array) $options;
+		$options = ( is_array( $options ) || is_object( $options ) ) ? $options : (array) $options;
 
 		if ( ! is_email( $value ) ) {
 			$value = '';
