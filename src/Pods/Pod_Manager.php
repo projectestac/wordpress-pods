@@ -3,6 +3,8 @@
 namespace Pods;
 
 use Pods;
+use Pods\Whatsit\Pod;
+use WP_Error;
 
 /**
  * Manage Pods instances for reuse.
@@ -16,9 +18,9 @@ class Pod_Manager {
 	 *
 	 * @since 2.9.0
 	 *
-	 * @var Pods[]
+	 * @var array<string,Pods>
 	 */
-	private $instances;
+	private $instances = [];
 
 	/**
 	 * Get the Pods object for a specific pod name and item ID. Possibly use already built-object if available.
@@ -31,11 +33,11 @@ class Pod_Manager {
 	 */
 	public function get_pod( $args = [] ) {
 		if ( is_string( $args ) ) {
+			$func_args = func_get_args();
+
 			$args = [
 				'name' => $args,
 			];
-
-			$func_args = func_get_args();
 
 			if ( isset( $func_args[1] ) ) {
 				if ( is_array( $func_args[1] ) ) {
@@ -55,6 +57,7 @@ class Pod_Manager {
 		$find        = isset( $args['find'] ) ? $args['find'] : null;
 		$store_by_id = isset( $args['store_by_id'] ) && ! $args['store_by_id'];
 		$validation  = isset( $args['validation'] ) && $args['validation'];
+		$strict      = isset( $args['strict'] ) ? $args['strict'] : null;
 
 		if ( $id && $store_by_id ) {
 			$key .= '/' . $id;
@@ -70,7 +73,7 @@ class Pod_Manager {
 			return $this->instances[ $key ];
 		}
 
-		$pod = pods( $args['name'], $id );
+		$pod = pods( $args['name'], $id, $strict );
 
 		if ( $validation ) {
 			if ( ! $pod || ! $pod->valid() ) {
@@ -91,6 +94,29 @@ class Pod_Manager {
 		}
 
 		return $pod;
+	}
+
+	/**
+	 * Flush the instances stored.
+	 *
+	 * @param null|string|Pod $pod The pod name or the Pod object to flush instances for, otherwise leave as null to flush all instances.
+	 */
+	public function flush( $pod = null ) {
+		if ( ! $pod ) {
+			$this->instances = [];
+
+			return;
+		}
+
+		$pod_name = $pod instanceof Pod ? $pod->get_name() : $pod;
+
+		foreach ( $this->instances as $key => $instance ) {
+			if ( $key === $pod_name ) {
+				unset( $this->instances[ $key ] );
+			} elseif ( $instance->pod_data && $instance->pod_data->get_name() === $pod_name ) {
+				unset( $this->instances[ $key ] );
+			}
+		}
 	}
 
 }

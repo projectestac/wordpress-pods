@@ -2,8 +2,8 @@
 
 namespace Pods\Blocks\Types;
 
-use Pods\Whatsit\Store;
-use Tribe__Editor__Blocks__Abstract;
+use Exception;
+use Pods\Blocks\Blocks_Abstract;
 use WP_Block;
 
 /**
@@ -11,7 +11,7 @@ use WP_Block;
  *
  * @since 2.8.0
  */
-abstract class Base extends Tribe__Editor__Blocks__Abstract {
+abstract class Base extends Blocks_Abstract {
 
 	/**
 	 * Set the default attributes of this block.
@@ -123,6 +123,10 @@ abstract class Base extends Tribe__Editor__Blocks__Abstract {
 			}
 		}
 
+		$params['_is_editor_mode'] = $this->in_editor_mode( $params );
+		$params['_is_preview']     = is_preview();
+		$params['_preview_id']     = $params['_is_preview'] ? get_queried_object_id() : null;
+
 		return parent::attributes( $params );
 	}
 
@@ -154,6 +158,52 @@ abstract class Base extends Tribe__Editor__Blocks__Abstract {
 		</div>
 		<?php
 		return ob_get_clean();
+	}
+
+	/**
+	 * Get the list of all Pods for a block field.
+	 *
+	 * @since 2.9.10
+	 *
+	 * @return array List of all Pod names and labels.
+	 */
+	public function callback_get_all_pods() {
+		$api = pods_api();
+
+		$all_pods = [];
+
+		try {
+			$all_pods = $api->load_pods( [ 'names' => true ] );
+		} catch ( Exception $exception ) {
+			pods_debug_log( $exception );
+		}
+
+		return array_merge( [
+				'' => '- ' . __( 'Use Current Pod', 'pods' ) . ' -',
+		], $all_pods );
+	}
+
+	/**
+	 * Get the list of all Pod Templates for a block field.
+	 *
+	 * @since 2.9.10
+	 *
+	 * @return array List of all Pod Template names and labels.
+	 */
+	public function callback_get_all_pod_templates() {
+		$api = pods_api();
+
+		$all_templates = [];
+
+		try {
+			$all_templates = $api->load_templates( [ 'names' => true ] );
+		} catch ( Exception $exception ) {
+			pods_debug_log( $exception );
+		}
+
+		return array_merge( [
+				'' => '- ' . __( 'Use Custom Template', 'pods' ) . ' -',
+		], $all_templates );
 	}
 
 	/**
@@ -199,12 +249,25 @@ abstract class Base extends Tribe__Editor__Blocks__Abstract {
 	 * @return bool Whether the block is being rendered in editor mode.
 	 */
 	public function in_editor_mode( $attributes = [] ) {
-		return (
-			! empty( $attributes['_is_editor'] )
-			|| (
-				wp_is_json_request()
-				&& did_action( 'rest_api_init' )
-			)
-		);
+		if ( ! empty( $attributes['_is_editor'] ) && ! empty( $attributes['_is_editor_mode'] ) ) {
+			return true;
+		}
+
+		if ( is_admin() ) {
+			$screen = get_current_screen();
+
+			if ( $screen && 'post' === $screen->base ) {
+				return true;
+			}
+		}
+
+		if (
+			wp_is_json_request()
+			&& did_action( 'rest_api_init' )
+		) {
+			return true;
+		}
+
+		return false;
 	}
 }

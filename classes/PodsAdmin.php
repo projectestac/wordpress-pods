@@ -4,6 +4,7 @@ use Pods\Admin\Config\Pod as Config_Pod;
 use Pods\Admin\Config\Group as Config_Group;
 use Pods\Admin\Config\Field as Config_Field;
 use Pods\Admin\Settings;
+use Pods\Tools\Repair;
 use Pods\Whatsit\Pod;
 
 /**
@@ -279,7 +280,7 @@ class PodsAdmin {
 									if ( 'edit' === pods_v( 'action', 'get', 'manage' ) ) {
 										$all_title = pods_v( 'label_edit_item', $pod['options'], __( 'Edit', 'pods' ) . ' ' . $singular_label );
 									} elseif ( 'add' === pods_v( 'action', 'get', 'manage' ) ) {
-										$all_title = pods_v( 'label_add_new_item', $pod['options'], __( 'Add New', 'pods' ) . ' ' . $singular_label );
+										$all_title = pods_v( 'label_add_new_item', $pod['options'], sprintf( __( 'Add New %s', 'pods' ), $singular_label ) );
 									}
 								}
 
@@ -306,8 +307,8 @@ class PodsAdmin {
 								add_menu_page( $page_title, $menu_label, 'read', $parent_page, '', $menu_icon, $menu_position );
 							}
 
-							$add_title = pods_v( 'label_add_new_item', $pod['options'], __( 'Add New', 'pods' ) . ' ' . $singular_label );
-							$add_label = pods_v( 'label_add_new', $pod['options'], __( 'Add New', 'pods' ) );
+							$add_title = pods_v( 'label_add_new_item', $pod['options'], sprintf( __( 'Add New %s', 'pods' ), $singular_label ) );
+							$add_label = pods_v( 'label_add_new', $pod['options'], sprintf( __( 'Add New %s', 'pods' ), $singular_label ) );
 
 							add_submenu_page(
 								$parent_page, $add_title, $add_label, 'read', $page, array(
@@ -316,7 +317,7 @@ class PodsAdmin {
 								)
 							);
 						}//end if
-					} else {
+					} elseif ( 1 === (int) pods_v( 'use_submenu_fallback', $pod['options'], 1 ) ) {
 						$submenu[] = $pod;
 					}//end if
 				}//end foreach
@@ -551,6 +552,12 @@ class PodsAdmin {
 					'function' => array( $this, 'admin_components' ),
 					'access'   => 'pods_components',
 				),
+				'pods-access-rights-review' => array(
+					'label'    => __( 'Review Access Rights', 'pods' ),
+					'title'    => __( 'Pods Review Access Rights', 'pods' ),
+					'function' => array( $this, 'admin_access_rights_review' ),
+					'access'   => 'pods',
+				),
 				'pods-settings'   => array(
 					'label'    => __( 'Settings', 'pods' ),
 					'title'    => __( 'Pods Settings', 'pods' ),
@@ -724,7 +731,7 @@ class PodsAdmin {
 		// @codingStandardsIgnoreLine
 		$pod_name = str_replace( array( 'pods-manage-', 'pods-add-new-' ), '', $_GET['page'] );
 
-		$pod = pods( $pod_name, pods_v( 'id', 'get', null, true ) );
+		$pod = pods_get_instance( $pod_name, pods_v( 'id', 'get', null, true ) );
 
 		if ( ! $pod->pod_data->has_fields() ) {
 			pods_message( __( 'This Pod does not have any fields defined.', 'pods' ), 'error' );
@@ -748,7 +755,7 @@ class PodsAdmin {
 		// @codingStandardsIgnoreLine
 		$pod_name = str_replace( 'pods-settings-', '', $_GET['page'] );
 
-		$pod = pods( $pod_name );
+		$pod = pods_get_instance( $pod_name );
 
 		if ( 'custom' !== pods_v( 'ui_style', $pod->pod_data['options'], 'settings', true ) ) {
 			$actions_disabled = array(
@@ -766,10 +773,13 @@ class PodsAdmin {
 			$page_title = pods_v( 'label', $pod->pod_data, ucwords( str_replace( '_', ' ', $pod->pod_data['name'] ) ), true );
 			$page_title = apply_filters( 'pods_admin_menu_page_title', $page_title, $pod->pod_data );
 
+			$pod_pod_name = $pod->pod;
+
 			$ui = array(
+				'id'               => $pod_pod_name,
 				'pod'              => $pod,
 				'fields'           => array(
-					'edit' => $pod->pod_data['fields'],
+					'edit' => $pod->pod_data->get_fields(),
 				),
 				'header'           => array(
 					'edit' => $page_title,
@@ -781,8 +791,6 @@ class PodsAdmin {
 				'icon'             => pods_evaluate_tags( pods_v( 'menu_icon', $pod->pod_data['options'] ), true ),
 				'actions_disabled' => $actions_disabled,
 			);
-
-			$pod_pod_name = $pod->pod;
 
 			$ui = apply_filters( "pods_admin_ui_{$pod_pod_name}", apply_filters( 'pods_admin_ui', $ui, $pod->pod, $pod ), $pod->pod, $pod );
 
@@ -805,6 +813,9 @@ class PodsAdmin {
 	 * @return string
 	 */
 	public function media_button( $context = null ) {
+		if ( ! empty( $_GET['action'] ) && 'elementor' === $_GET['action'] ) {
+			return '';
+		}
 
 		// If shortcodes are disabled don't show the button
 		if ( defined( 'PODS_DISABLE_SHORTCODE' ) && PODS_DISABLE_SHORTCODE ) {
@@ -999,6 +1010,14 @@ class PodsAdmin {
 			$pod_type_label = null;
 			$pod_storage    = $pod['storage'];
 
+			if ( empty( $pod_type ) || ! is_string( $pod_type ) ) {
+				$pod_type = 'post_type';
+			}
+
+			if ( empty( $pod_storage ) || ! is_string( $pod_storage ) ) {
+				$pod_storage = 'meta';
+			}
+
 			$show_meta_count = 'meta' === $pod_storage || in_array( $pod['type'], [ 'post_type', 'taxonomy', 'user', 'comment' ], true );
 
 			if ( ! empty( $pod['internal'] ) ) {
@@ -1066,7 +1085,7 @@ class PodsAdmin {
 			$group_count = 0;
 			$field_count = 0;
 
-			if ( ! pods_is_types_only() ) {
+			if ( ! pods_is_types_only( false, $pod->get_name() ) ) {
 				$group_count = $pod->count_groups();
 				$field_count = $pod->count_fields();
 			}
@@ -1182,7 +1201,7 @@ class PodsAdmin {
 				'pod_object' => $pod,
 			];
 
-			if ( ! pods_is_types_only() ) {
+			if ( ! pods_is_types_only( false, $pod['name'] ) ) {
 				$pod['group_count'] = number_format_i18n( $group_count );
 				$pod['field_count'] = number_format_i18n( $field_count );
 
@@ -1306,7 +1325,7 @@ class PodsAdmin {
 				'add'           => [ $this, 'admin_setup_add' ],
 				'edit'          => [
 					'callback'          => [ $this, 'admin_setup_edit' ],
-					'restrict_callback' => [ $this, 'admin_setup_edit_restrict' ],
+					'restrict_callback' => [ $this, 'admin_restrict_non_db_type' ],
 				],
 				'duplicate_pod' => [
 					'label'             => __( 'Duplicate', 'pods' ),
@@ -1322,7 +1341,7 @@ class PodsAdmin {
 											. "\n\n"
 											. __( 'You may want to go to Pods Admin > Settings > Cleanup & Reset > "Delete all content for a Pod" first.', 'pods' ),
 					'callback'          => [ $this, 'admin_setup_delete' ],
-					'restrict_callback' => [ $this, 'admin_setup_delete_restrict' ],
+					'restrict_callback' => [ $this, 'admin_restrict_non_db_type' ],
 					'nonce'             => true,
 					'span_class'        => 'delete',
 				],
@@ -1380,7 +1399,593 @@ class PodsAdmin {
 		$this->handle_callouts_updates();
 
 		add_filter( 'pods_ui_manage_custom_container_classes', array( $this, 'admin_manage_container_class' ) );
-		add_action( 'pods_ui_manage_after_container', array( $this, 'admin_manage_callouts' ) );
+
+		if ( $this->has_horizontal_callout() ) {
+			add_action( 'pods_ui_manage_before_container', [ $this, 'admin_manage_callouts' ] );
+		} else {
+			add_action( 'pods_ui_manage_after_container', [ $this, 'admin_manage_callouts' ] );
+		}
+
+		pods_ui( $ui );
+	}
+
+	/**
+	 * Handle the Review Access Rights screen.
+	 */
+	public function admin_access_rights_review() {
+		$api = pods_api();
+
+		$pods = $api->load_pods( [ 'fields' => false ] );
+
+		if ( empty( $pods ) ) {
+			pods_message( __( 'You do not have any Pods set up yet.', 'pods ' ) );
+		}
+
+		$pod_types = $api->get_pod_types();
+
+		$first_pods_version = get_option( 'pods_framework_version_first' );
+		$first_pods_version = '' === $first_pods_version ? PODS_VERSION : $first_pods_version;
+
+		$dynamic_features_allow_options      = pods_access_get_dynamic_features_allow_options();
+		$restricted_dynamic_features_options = pods_access_get_restricted_dynamic_features_options();
+
+		$other_view_groups = [
+			'public' => [
+				'label' => __( 'Content Privacy', 'pods' ),
+				'views' => [
+					'1' => [
+						'label' => __( 'Public', 'pods' ),
+						'count' => 0,
+					],
+					'0' => [
+						'label' => __( 'Private', 'pods' ),
+						'count' => 0,
+					],
+				],
+			],
+			'dynamic_features_allow' => [
+				'label' => __( 'Dynamic Features', 'pods' ),
+				'views' => [],
+			],
+			'restricted_dynamic_features' => [
+				'label' => __( 'Dynamic Features', 'pods' ),
+				'views' => [
+					'unrestricted' => [
+						'label' => __( 'Unrestricted', 'pods' ),
+						'count' => 0,
+					],
+					'restricted' => [
+						'label' => __( 'Restricted', 'pods' ),
+						'count' => 0,
+					],
+				],
+			],
+		];
+
+		foreach ( $dynamic_features_allow_options as $dynamic_features_allow_option => $dynamic_features_allow_option_label ) {
+			$other_view_groups['dynamic_features_allow']['views'][ $dynamic_features_allow_option ] = [
+				'label' => trim( str_replace( '🔒', '', $dynamic_features_allow_option_label ) ),
+				'count' => 0,
+			];
+		}
+
+		$other_view_groups['dynamic_features_allow']['views']['inherit']['label'] = __( 'WP Default', 'pods' );
+
+		$row = false;
+
+		$pod_types_found = [];
+		$sources_found   = [];
+		$source_types    = [];
+
+		$fields = [
+			'label'                       => [
+				'label' => __( 'Label', 'pods' ),
+			],
+			'name'                        => [
+				'label' => __( 'Name', 'pods' ),
+			],
+			'type'                        => [
+				'label' => __( 'Type', 'pods' ),
+			],
+			'source'                      => [
+				'label' => __( 'Source', 'pods' ),
+				'width' => '10%',
+				'type'  => 'raw',
+			],
+			'public'                      => [
+				'label' => __( 'Content Privacy', 'pods' ),
+				'type'  => 'raw',
+			],
+			'dynamic_features_allow'      => [
+				'label' => __( 'Allow Dynamic Features', 'pods' ),
+				'type'  => 'raw',
+			],
+			'restricted_dynamic_features' => [
+				'label' => __( 'Restricted Dynamic Features', 'pods' ),
+				'type'  => 'pick',
+			],
+		];
+
+		/**
+		 * Filters whether to extend internal Pods.
+		 *
+		 * @since 2.8.0
+		 *
+		 * @param bool $extend_internal Whether to extend internal Pods.
+		 */
+		$extend_internal = apply_filters( 'pods_admin_setup_extend_pods_internal', false );
+
+		$pod_list = array();
+
+		$has_source = false;
+
+		foreach ( $pods as $k => $pod ) {
+			$pod_type       = $pod['type'];
+			$pod_type_label = null;
+
+			if ( empty( $pod_type ) || ! is_string( $pod_type ) ) {
+				$pod_type = 'post_type';
+			}
+
+			if ( ! empty( $pod['internal'] ) ) {
+				// Don't show internal if we aren't extending them.
+				if ( ! $extend_internal ) {
+					continue;
+				}
+
+				$pod_type = 'internal';
+			}
+
+			if ( isset( $pod_types[ $pod_type ] ) ) {
+				$pod_type_label = $pod_types[ $pod_type ];
+			}
+
+			$pod_real_type = $pod_type;
+
+			if ( null !== $pod_type_label ) {
+				if ( ! $pod->is_extended() && in_array( $pod_type, array(
+						'post_type',
+						'taxonomy',
+					), true ) ) {
+					if ( 'post_type' === $pod_type ) {
+						$pod_type = 'cpt';
+					} else {
+						$pod_type = 'ct';
+					}
+
+					if ( isset( $pod_types[ $pod_type ] ) ) {
+						$pod_type_label = $pod_types[ $pod_type ];
+					}
+				}
+
+				if ( ! isset( $pod_types_found[ $pod_type ] ) ) {
+					$pod_types_found[ $pod_type ] = 1;
+				} else {
+					$pod_types_found[ $pod_type ] ++;
+				}
+
+				$pod_real_type = $pod_type;
+				$pod_type      = $pod_type_label;
+			}
+
+			$object_storage_type = $pod->get_object_storage_type();
+			$source              = $pod->get_object_storage_type_label();
+
+			if ( $source ) {
+				$source_types[ $object_storage_type ] = $source;
+
+				if ( ! isset( $sources_found[ $object_storage_type ] ) ) {
+					$sources_found[ $object_storage_type ] = 1;
+				} else {
+					$sources_found[ $object_storage_type ] ++;
+				}
+			}
+
+			$source = esc_html( $source );
+
+			if ( 'post_type' !== $object_storage_type ) {
+				$has_source = true;
+
+				if ( 'file' === $object_storage_type ) {
+					$file_source = $pod->get_arg( '_pods_file_source' );
+
+					if ( $file_source ) {
+						if ( 0 === strpos( $file_source, ABSPATH ) ) {
+							$file_source = str_replace( ABSPATH, '', $file_source );
+						}
+
+						$source .= ' ' . pods_help(
+							sprintf(
+								'<strong>%s:</strong> %s',
+								esc_html__( 'File source', 'pods' ),
+								esc_html( $file_source )
+							),
+							null,
+							'.pods-admin-container',
+							true
+						);
+					}
+				} elseif ( 'collection' === $object_storage_type ) {
+					$code_source = $pod->get_arg( '_pods_code_source' );
+
+					if ( $code_source ) {
+						if ( 0 === strpos( $code_source, ABSPATH ) ) {
+							$code_source = str_replace( ABSPATH, '', $code_source );
+						}
+
+						$source .= ' ' . pods_help(
+							sprintf(
+								'<strong>%s:</strong> %s',
+								esc_html__( 'Code source', 'pods' ),
+								esc_html( $code_source )
+							),
+							null,
+							'.pods-admin-container',
+							true
+						);
+					}
+				}
+			}
+
+			$is_public = pods_is_type_public(
+				[
+					'pod' => $pod,
+				]
+			);
+
+			$dynamic_features_allow_default = 'inherit';
+
+			if ( 'pod' === $pod->get_type() ) {
+				$dynamic_features_allow_default = version_compare( $first_pods_version, '3.1.0-a-1', '<' ) ? '1' : '0';
+			}
+
+			$dynamic_features_allow = $pod->get_arg( 'dynamic_features_allow', $dynamic_features_allow_default, true );
+
+			if ( isset( $other_view_groups['dynamic_features_allow']['views'][ $dynamic_features_allow ] ) ) {
+				$other_view_groups['dynamic_features_allow']['views'][ $dynamic_features_allow ]['count'] ++;
+			}
+
+			$dynamic_features_allow_label = isset( $dynamic_features_allow_options[ $dynamic_features_allow ] ) ? $dynamic_features_allow_options[ $dynamic_features_allow ] : $dynamic_features_allow_options[ $dynamic_features_allow_default ];
+
+			if ( $dynamic_features_allow_label === $dynamic_features_allow_options['inherit'] ) {
+				$dynamic_features_allow_label .= ' - ' . ( $is_public ? $dynamic_features_allow_options['1'] : $dynamic_features_allow_options['0'] );
+			}
+
+			$restrict_dynamic_features = (int) $pod->get_arg( 'restrict_dynamic_features', '1' );
+
+			$pod_row = [
+				'id'                          => $pod['id'],
+				'label'                       => $pod['label'],
+				'name'                        => $pod['name'],
+				'object'                      => $pod['object'],
+				'type'                        => $pod_type,
+				'real_type'                   => $pod_real_type,
+				'source'                      => $source,
+				'real_source'                 => $object_storage_type,
+				'bulk_disabled'               => 'post_type' !== $object_storage_type,
+				'pod_object'                  => $pod,
+				'public'                      => $is_public ? __( 'Public', 'pods' ) : '🔒 ' . __( 'Private', 'pods' ),
+				'real_public'                 => $is_public ? 1 : 0,
+				'dynamic_features_allow'      => $dynamic_features_allow_label,
+				'real_dynamic_features_allow' => $dynamic_features_allow,
+				'restricted_dynamic_features' => $pod->get_arg( 'restricted_dynamic_features' ),
+			];
+
+			if ( 0 === $restrict_dynamic_features ) {
+				$pod_row['restricted_dynamic_features'] = [];
+			}
+
+			if ( ! is_array( $pod_row['restricted_dynamic_features'] ) ) {
+				$pod_row['restricted_dynamic_features'] = [
+					'display',
+					'form',
+				];
+			}
+
+			if ( $pod->is_extended() ) {
+				$extended_help_text = pods_help(
+					__( 'This is an extended content type. The Content Privacy cannot be changed by Pods. You can choose to enable Dynamic Features separately anyway if it has "WP Default" used.', 'pods' ),
+					null,
+					'.pods-admin-container',
+					true
+				);
+
+				$pod_row['public'] .= $extended_help_text;
+
+				if ( 'inherit' === $dynamic_features_allow ) {
+					$pod_row['dynamic_features_allow'] .= $extended_help_text;
+				}
+			}
+
+			$other_view_groups['public']['views'][ (string) $pod_row['real_public'] ]['count'] ++;
+
+			if ( empty( $pod_row['restricted_dynamic_features'] ) ) {
+				$pod_row['restricted_dynamic_features']      = __( 'Unrestricted', 'pods' );
+				$pod_row['real_restricted_dynamic_features'] = 'unrestricted';
+			} else {
+				foreach ( $pod_row['restricted_dynamic_features'] as $fk => $feature ) {
+					$pod_row['restricted_dynamic_features'][ $fk ] = pods_v( $feature, $restricted_dynamic_features_options, ucwords( $feature ) );
+				}
+
+				$pod_row['real_restricted_dynamic_features'] = 'restricted';
+			}
+
+			$other_view_groups['restricted_dynamic_features']['views'][ $pod_row['real_restricted_dynamic_features'] ]['count'] ++;
+
+			// @codingStandardsIgnoreLine
+			if ( 'manage' !== pods_v( 'action' ) ) {
+				$found_id   = (int) pods_v( 'id' );
+				$found_name = pods_v( 'name' );
+
+				if (
+					(
+						$found_id
+						&& $pod_row['id'] === $found_id
+					)
+					|| (
+						$found_name
+						&& $pod_row['name'] === $found_name
+					)
+				) {
+					$row = $pod_row;
+				}
+			}
+
+			$pod_list[] = $pod_row;
+		}//end foreach
+
+		if ( ! $has_source ) {
+			unset( $fields['source'] );
+		}
+
+		if ( false === $row && 0 < pods_v( 'id' ) && 'delete' !== pods_v( 'action' ) ) {
+			pods_message( 'Pod not found', 'error' );
+
+			// @codingStandardsIgnoreLine
+			unset( $_GET['id'], $_GET['action'] );
+		}
+
+		$total_pods = count( $pod_list );
+
+		$total_pods_unfiltered = $total_pods;
+
+		// Handle filtering.
+		$view_filters = [
+			'type'                        => 'real_type',
+			'source'                      => 'real_source',
+			'public'                      => 'real_public',
+			'dynamic_features_allow'      => 'real_dynamic_features_allow',
+			'restricted_dynamic_features' => 'real_restricted_dynamic_features',
+		];
+
+		$view                     = pods_v( 'view', 'get', 'all', true );
+		$view_filter_info         = explode( '/', $view );
+		$view_filter_group_active = isset( $view_filter_info[0] ) ? $view_filter_info[0] : null;
+		$view_filter_key_active   = isset( $view_filter_info[1] ) ? $view_filter_info[1] : null;
+
+		foreach ( $view_filters as $view_filter => $real_key ) {
+			if ( $view_filter_group_active !== $view_filter ) {
+				continue;
+			}
+
+			foreach ( $pod_list as $pod_key => $pod ) {
+				// Maybe remove the pod from the list.
+				if ( (string) $view_filter_key_active !== (string) $pod[ $real_key ] ) {
+					unset( $pod_list[ $pod_key ] );
+				}
+			}
+		}
+
+		$pod_list = wp_list_sort( array_values( $pod_list ), 'label' );
+
+		$total_pods = count( $pod_list );
+
+		$ui = [
+			'data'             => $pod_list,
+			'row'              => $row,
+			'total'            => $total_pods,
+			'total_found'      => $total_pods,
+			'items'            => 'Pods',
+			'item'             => 'Pod',
+			'header'           => [
+				'manage' => '🔒 ' . __( 'Review Access Rights for Pods', 'pods' ),
+			],
+			'fields'           => [
+				'manage' => $fields,
+			],
+			'sql'              => [
+				'field_id'    => 'id',
+				'field_index' => 'label',
+			],
+			'actions_disabled' => [ 'add', 'view', 'export', 'delete', 'duplicate' ],
+			'actions_custom'   => [
+				'edit'                        => [
+					'label'             => __( 'Edit Pod', 'pods' ),
+					'restrict_callback' => [ $this, 'admin_restrict_non_db_type' ],
+				],
+				'make_public'                 => [
+					'label'             => __( 'Make public', 'pods' ),
+					'callback'          => [ $this, 'admin_access_rights_review_make_public' ],
+					'restrict_callback' => [ $this, 'admin_restrict_access_rights_review_make_public' ],
+					'nonce'             => true,
+				],
+				'make_private'                => [
+					'label'             => __( 'Make private', 'pods' ),
+					'callback'          => [ $this, 'admin_access_rights_review_make_private' ],
+					'restrict_callback' => [ $this, 'admin_restrict_access_rights_review_make_private' ],
+					'nonce'             => true,
+				],
+				'wp_default_dynamic_features' => [
+					'label'             => __( 'Set Dynamic Features to WP Default', 'pods' ),
+					'callback'          => [ $this, 'admin_access_rights_review_wp_default_dynamic_features' ],
+					'restrict_callback' => [ $this, 'admin_restrict_access_rights_review_wp_default_dynamic_features' ],
+					'nonce'             => true,
+				],
+				'enable_dynamic_features'     => [
+					'label'             => __( 'Enable Dynamic Features', 'pods' ),
+					'callback'          => [ $this, 'admin_access_rights_review_enable_dynamic_features' ],
+					'restrict_callback' => [ $this, 'admin_restrict_access_rights_review_enable_dynamic_features' ],
+					'nonce'             => true,
+				],
+				'disable_dynamic_features'    => [
+					'label'             => __( 'Disable Dynamic Features', 'pods' ),
+					'callback'          => [ $this, 'admin_access_rights_review_disable_dynamic_features' ],
+					'restrict_callback' => [ $this, 'admin_restrict_access_rights_review_disable_dynamic_features' ],
+					'nonce'             => true,
+				],
+				'restrict_dynamic_features'   => [
+					'label'             => __( 'Restrict all dynamic features', 'pods' ),
+					'callback'          => [ $this, 'admin_access_rights_review_restrict_dynamic_features' ],
+					'restrict_callback' => [ $this, 'admin_restrict_access_rights_review_restrict_dynamic_features' ],
+					'nonce'             => true,
+				],
+				'unrestrict_dynamic_features' => [
+					'label'             => __( 'Unrestrict all dynamic features', 'pods' ),
+					'callback'          => [ $this, 'admin_access_rights_review_unrestrict_dynamic_features' ],
+					'restrict_callback' => [ $this, 'admin_restrict_access_rights_review_unrestrict_dynamic_features' ],
+					'nonce'             => true,
+				],
+			],
+			'actions_bulk'     => [
+				'make_public'                 => [
+					'label'    => __( 'Make public', 'pods' ),
+					'callback' => [ $this, 'admin_access_rights_review_make_public_bulk' ],
+				],
+				'make_private'                => [
+					'label'    => __( 'Make private', 'pods' ),
+					'callback' => [ $this, 'admin_access_rights_review_make_private_bulk' ],
+				],
+				'wp_default_dynamic_features' => [
+					'label'    => __( 'Set Dynamic Features to WP Default', 'pods' ),
+					'callback' => [ $this, 'admin_access_rights_review_wp_default_dynamic_features_bulk' ],
+				],
+				'enable_dynamic_features'     => [
+					'label'    => __( 'Enable Dynamic Features', 'pods' ),
+					'callback' => [ $this, 'admin_access_rights_review_enable_dynamic_features_bulk' ],
+				],
+				'disable_dynamic_features'    => [
+					'label'    => __( 'Disable Dynamic Features', 'pods' ),
+					'callback' => [ $this, 'admin_access_rights_review_disable_dynamic_features_bulk' ],
+				],
+				'restrict_dynamic_features'   => [
+					'label'    => __( 'Restrict all dynamic features', 'pods' ),
+					'callback' => [ $this, 'admin_access_rights_review_restrict_dynamic_features_bulk' ],
+				],
+				'unrestrict_dynamic_features' => [
+					'label'    => __( 'Unrestrict all dynamic features', 'pods' ),
+					'callback' => [ $this, 'admin_access_rights_review_unrestrict_dynamic_features_bulk' ],
+				],
+			],
+			'action_links'     => [
+				'edit' => pods_query_arg( [
+					'page'   => 'pods',
+					'action' => 'edit',
+					'id'     => '{@id}',
+					'name'   => '{@name}',
+				] ),
+			],
+			'search'           => false,
+			'searchable'       => false,
+			'sortable'         => true,
+			'pagination'       => false,
+		];
+
+		$ui['views']            = [ 'all' => __( 'All', 'pods' ) . ' (' . $total_pods_unfiltered . ')' ];
+		$ui['view']             = $view;
+		$ui['heading']          = [ 'views' => __( 'View', 'pods' ) ];
+		$ui['filters_enhanced'] = true;
+
+		if ( 1 < count( $pod_types_found ) ) {
+			foreach ( $pod_types_found as $pod_type => $number_found ) {
+				$ui['views'][ 'type/' . $pod_type ] = sprintf(
+					'<strong>%1$s:</strong> %2$s (%3$s)',
+					esc_html__( 'Type', 'pods' ),
+					esc_html( $pod_types[ $pod_type ] ),
+					number_format_i18n( $number_found )
+				);
+			}
+		}
+
+		if ( $has_source && 1 < count( $sources_found ) ) {
+			foreach ( $sources_found as $source_type => $number_found ) {
+				$ui['views'][ 'source/' . $source_type ] = sprintf(
+					'<strong>%1$s:</strong> %2$s (%3$s)',
+					esc_html__( 'Source', 'pods' ),
+					esc_html( $source_types[ $source_type ] ),
+					number_format_i18n( $number_found )
+				);
+			}
+		}
+
+		foreach ( $other_view_groups as $view_group_key => $view_group_info ) {
+			if ( empty( $view_group_info['views'] ) ) {
+				continue;
+			}
+
+			foreach ( $view_group_info['views'] as $view_key => $view_info ) {
+				$ui['views'][ $view_group_key . '/' . $view_key ] = sprintf(
+					'<strong>%1$s:</strong> %2$s (%3$s)',
+					$view_group_info['label'],
+					esc_html( $view_info['label'] ),
+					number_format_i18n( $view_info['count'] )
+				);
+			}
+		}
+
+		$this->handle_callouts_updates();
+
+		add_action( 'pods_ui_manage_before_filters', static function() {
+			$callout_dismiss_link = add_query_arg( [
+				'pods_callout_dismiss'       => 'access_rights',
+				'pods_callout_dismiss_nonce' => wp_create_nonce( 'pods_callout_dismiss_access_rights' ),
+			] );
+
+			pods_message(
+				wpautop(
+					esc_html__( 'This screen is for reviewing the access rights and settings for your Pods. You can change the access rights for each Pod individually or in bulk.', 'pods' )
+					 . "\n\n" . esc_html__( 'Carefully review whether your content types should be public and if dynamic features should be allowed.', 'pods' )
+					 . "\n\n" . '<a href="https://docs.pods.io/displaying-pods/access-rights-in-pods/" target="_blank" rel="noopener noreferrer">' . esc_html__( 'Read the documentation for more information', 'pods' ) . ' &raquo;</a>'
+				),
+				'info',
+				false,
+				false
+			);
+
+			$callouts = PodsAdmin::$instance->get_callouts();
+
+			if ( ! empty( $callouts['access_rights'] ) ) {
+				pods_message(
+					wpautop(
+						esc_html__( 'You have not confirmed your Pods access rights below yet.', 'pods' )
+						 . "\n\n" . esc_html__( 'Make changes below or confirm them.', 'pods' )
+						 . "\n\n" . '<a href="' . esc_url( $callout_dismiss_link ) . '" class="button button-primary">' . esc_html__( 'Yes, I confirm the access rights below are correct for my site', 'pods' ) . '</a>'
+					),
+					'warning',
+					false,
+					false
+				);
+			}
+
+			if ( ! pods_can_use_dynamic_features() ) {
+				pods_message(
+					wpautop(
+						sprintf(
+							'
+								🔒 %s
+
+								<a href="%s">%s &raquo;</a>
+							',
+							esc_html__( 'Dynamic Features are currently disabled globally which will automatically override any Dynamic Feature setting below from being referenced.', 'pods' ),
+							esc_url( admin_url( 'admin.php?page=pods-settings' ) ),
+							esc_html__( 'You can adjust this in your Pods Settings', 'pods' )
+						)
+					),
+					'error',
+					false,
+					false
+				);
+			}
+		} );
 
 		pods_ui( $ui );
 	}
@@ -1393,7 +1998,12 @@ class PodsAdmin {
 	 * @return array List of callouts.
 	 */
 	public function get_callouts() {
-		$force_callouts = false;
+		// Demo mode always bypasses callouts.
+		if ( pods_is_demo() ) {
+			return [];
+		}
+
+		$force_callouts = 1 === (int) pods_v( 'pods_force_callouts' );
 
 		$page = pods_v( 'page' );
 
@@ -1404,13 +2014,20 @@ class PodsAdmin {
 		$callouts = get_option( 'pods_callouts' );
 
 		if ( ! $callouts ) {
-			$callouts = array(
-				'friends_2022_30' => 1,
-			);
+			$callouts = [
+				'friends_2023_docs' => 1,
+				'access_rights'     => (
+					PodsInit::$version_last
+					&& version_compare( PodsInit::$version_last, '3.1.0-a-1', '<' )
+				) ? 0 : 1,
+			];
+
+			update_option( 'pods_callouts', $callouts );
 		}
 
-		// Handle Friends of Pods callout logic.
-		$callouts['friends_2022_30'] = ! isset( $callouts['friends_2022_30'] ) || $callouts['friends_2022_30'] || $force_callouts ? 1 : 0;
+		// Handle callouts logic.
+		$callouts['access_rights'] = ! isset( $callouts['access_rights'] ) || $callouts['access_rights'] ? 1 : 0;
+		$callouts['friends_2023_docs'] = ! isset( $callouts['friends_2023_docs'] ) || $callouts['friends_2023_docs'] || $force_callouts ? 1 : 0;
 
 		/**
 		 * Allow hooking into whether or not the specific callouts should show.
@@ -1425,6 +2042,23 @@ class PodsAdmin {
 	}
 
 	/**
+	 * Determine whether there's a horizontal callout.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param array $callouts The list of callouts if available, otherwise it will be fetched.
+	 *
+	 * @return bool Whether there's a horizontal callout.
+	 */
+	public function has_horizontal_callout( array $callouts = [] ): bool {
+		if ( ! $callouts ) {
+			$callouts = $this->get_callouts();
+		}
+
+		return ! empty( $callouts['access_rights'] );
+	}
+
+	/**
 	 * Handle callouts update logic.
 	 *
 	 * @since 2.7.17
@@ -1436,18 +2070,59 @@ class PodsAdmin {
 			$callouts = array();
 		}
 
-		$disable_pods = pods_v( 'pods_callout_dismiss' );
+		$callout_dismiss = sanitize_text_field( pods_v( 'pods_callout_dismiss' ) );
+		$callout_dismiss_nonce = pods_v( 'pods_callout_dismiss_nonce' );
 
-		// Disable Friends of Pods callout.
-		if ( 'friends_2022_30' === $disable_pods ) {
-			$callouts['friends_2022_30'] = 0;
+		// Demo mode will auto-update the option for future loads.
+		$is_demo = pods_is_demo();
 
-			update_option( 'pods_callouts', $callouts );
-		} elseif ( 'reset' === $disable_pods ) {
-			$callouts = array();
+		// Handle reset dismiss separately.
+		if ( 'reset' === $callout_dismiss ) {
+			// Reset callouts.
+			update_option( 'pods_callouts', [] );
 
-			update_option( 'pods_callouts', $callouts );
+			return;
 		}
+
+		// Invalid nonce, cannot do anything with this dismiss request.
+		if (
+			! $is_demo
+			&& (
+				! $callout_dismiss_nonce
+				|| false === wp_verify_nonce( $callout_dismiss_nonce, 'pods_callout_dismiss_' . $callout_dismiss )
+			)
+		) {
+			return;
+		}
+
+		if ( $is_demo ) {
+			// Disable Friends of Pods callout on demos.
+			$callout_dismiss = 'friends_2023_docs';
+		}
+
+		if ( $callout_dismiss ) {
+			$this->update_callout( $callout_dismiss, false );
+		}
+	}
+
+	/**
+	 * Handle updating whether a callout should be enabled.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param string $callout The callout to update.
+	 * @param bool   $enabled Whether the callout should be enabled.
+	 */
+	public function update_callout( string $callout, bool $enabled ) {
+		$callouts = get_option( 'pods_callouts' );
+
+		if ( ! $callouts ) {
+			$callouts = array();
+		}
+
+		$callouts[ $callout ] = (int) $enabled;
+
+		update_option( 'pods_callouts', $callouts );
 	}
 
 	/**
@@ -1466,7 +2141,11 @@ class PodsAdmin {
 		$callouts = array_filter( $callouts );
 
 		if ( ! empty( $callouts ) ) {
-			$classes[] = 'pods-admin--flex';
+			if ( $this->has_horizontal_callout( $callouts ) ) {
+				$classes[] = 'pods-admin--flex-horizontal';
+			} else {
+				$classes[] = 'pods-admin--flex';
+			}
 		}
 
 		return $classes;
@@ -1478,6 +2157,12 @@ class PodsAdmin {
 	 * @since 2.7.17
 	 */
 	public function admin_manage_callouts() {
+		static $did_callout = false;
+
+		if ( $did_callout ) {
+			return;
+		}
+
 		$force_callouts = false;
 
 		$page = pods_v( 'page' );
@@ -1488,8 +2173,14 @@ class PodsAdmin {
 
 		$callouts = $this->get_callouts();
 
-		if ( ! empty( $callouts['friends_2022_30'] ) ) {
-			pods_view( PODS_DIR . 'ui/admin/callouts/friends_2022_30.php', compact( array_keys( get_defined_vars() ) ) );
+		if ( ! empty( $callouts['access_rights'] ) ) {
+			$did_callout = true;
+
+			pods_view( PODS_DIR . 'ui/admin/callouts/access_rights.php', compact( array_keys( get_defined_vars() ) ) );
+		} elseif ( ! empty( $callouts['friends_2023_docs'] ) ) {
+			$did_callout = true;
+
+			pods_view( PODS_DIR . 'ui/admin/callouts/friends_2023_docs.php', compact( array_keys( get_defined_vars() ) ) );
 		}
 	}
 
@@ -1539,8 +2230,12 @@ class PodsAdmin {
 		$original_field_count = 0;
 
 		foreach ( $obj->data as $row ) {
-			if ( $row['id'] === $obj->id ) {
-				$original_field_count = $row['field_count'];
+			if ( (int) $row['id'] === (int) $obj->id ) {
+				if ( ! isset( $row['field_count'] ) ) {
+					$row['field_count'] = 0;
+				}
+
+				$original_field_count = (int) $row['field_count'];
 
 				break;
 			}
@@ -1583,18 +2278,19 @@ class PodsAdmin {
 			'include_fields'       => false,
 		] );
 
-		if ( ! $migrated ) {
-			$group_field_count = wp_list_pluck( $current_pod['groups'], 'fields' );
-			$group_field_count = array_map( 'count', $group_field_count );
-			$group_field_count = array_sum( $group_field_count );
+		$group_field_count = wp_list_pluck( $current_pod['groups'], 'fields' );
+		$group_field_count = array_map( 'count', $group_field_count );
+		$group_field_count = array_sum( $group_field_count );
 
-			if ( $original_field_count !== $group_field_count ) {
+		// Detect if there may be a migration/repair needed.
+		if ( $original_field_count !== $group_field_count ) {
+			if ( ! $migrated ) {
 				$pod = $this->maybe_migrate_pod_fields_into_group( $pod );
 
 				// Check again in case the pod migrated wrong.
 				if ( ! $pod instanceof Pod ) {
-					$obj->id = null;
-					$obj->row = [];
+					$obj->id     = null;
+					$obj->row    = [];
 					$obj->action = 'manage';
 
 					$obj->error( __( 'Invalid Pod configuration detected.', 'pods' ) );
@@ -1602,6 +2298,14 @@ class PodsAdmin {
 
 					return null;
 				}
+
+				$current_pod = $pod->export( [
+					'include_groups'       => true,
+					'include_group_fields' => true,
+					'include_fields'       => false,
+				] );
+			} else {
+				pods_message( __( 'You may need to repair this Pod, we detected some fields not assigned to the groups shown in this configuration. You can find the tool at Pods Admin > Settings > Tools.', 'pods' ) );
 			}
 		}
 
@@ -1673,27 +2377,6 @@ class PodsAdmin {
 	}
 
 	/**
-	 * Restrict Edit action.
-	 *
-	 * @param bool   $restricted Whether action is restricted.
-	 * @param array  $restrict   Restriction array.
-	 * @param string $action     Current action.
-	 * @param array  $row        Item data row.
-	 * @param PodsUI $obj        PodsUI object.
-	 *
-	 * @since 2.3.10
-	 *
-	 * @return bool
-	 */
-	public function admin_setup_edit_restrict( $restricted, $restrict, $action, $row, $obj ) {
-		if ( __( 'DB', 'pods' ) !== $row['source'] ) {
-			$restricted = true;
-		}
-
-		return $restricted;
-	}
-
-	/**
 	 * Get list of field related objects.
 	 *
 	 * @since 2.8.0
@@ -1727,136 +2410,53 @@ class PodsAdmin {
 	 * @return Pod The pod object.
 	 */
 	public function maybe_migrate_pod_fields_into_group( $pod ) {
-		$groups = $pod->get_groups( [
-			'fallback_mode' => false,
-		] );
+		$tool = pods_container( Repair::class );
 
-		$check_orphan_fields = ! $groups;
+		$results = $tool->repair_groups_and_fields_for_pod( $pod, 'upgrade' );
 
-		$api = pods_api();
-
-		$group_id = null;
-
-		// Only migrate if there are no groups or orphan fields.
-		if ( ! $check_orphan_fields ) {
-			$has_orphan_fields = $pod->has_fields( [
-				'fallback_mode' => false,
-				'group'         => null,
-			] );
-
-			if ( ! $has_orphan_fields ) {
-				$pod->set_arg( '_migrated_28', 1 );
-
-				try {
-					$api->save_pod( $pod );
-				} catch ( Exception $exception ) {
-					// Nothing to do for now.
-				}
-
-				$pod->flush();
-
-				return $pod;
-			}
-
-			$groups = wp_list_pluck( $groups, 'id' );
-			$groups = array_filter( $groups );
-
-			// Get the first group ID.
-			if ( ! empty( $groups ) ) {
-				$group_id = reset( $groups );
+		if ( '' !== $results['message_html'] ) {
+			if ( 'pods' === pods_v( 'page' ) && 'edit' === pods_v( 'action' ) && 'create' === pods_v( 'do' ) ) {
+				// Refresh the page if we just added the Pod.
+				pods_redirect();
+			} else {
+				pods_message( $results['message_html'] );
 			}
 		}
 
-		$fields = $pod->get_fields( [
-			'fallback_mode' => false,
-			'group'         => null,
-		] );
-
-		if ( empty( $group_id ) ) {
-			$label = __( 'Details', 'pods' );
-
-			if ( in_array( $pod->get_type(), [ 'post_type', 'taxonomy', 'user', 'comment', 'media' ], true ) ) {
-				$label = __( 'More Fields', 'pods' );
-			}
-
-			/**
-			 * Filter the title of the Pods Metabox used in the post editor.
-			 *
-			 * @since unknown
-			 *
-			 * @param string  $title  The title to use, default is 'More Fields'.
-			 * @param obj|Pod $pod    Current Pods Object.
-			 * @param array   $fields Array of fields that will go in the metabox.
-			 * @param string  $type   The type of Pod.
-			 * @param string  $name   Name of the Pod.
-			 */
-			$label = apply_filters( 'pods_meta_default_box_title', $label, $pod, $fields, $pod->get_type(), $pod->get_name() );
-			$name  = sanitize_key( pods_js_name( sanitize_title( $label ) ) );
-
-			// Setup first group.
-			$group_id = $api->save_group( [
-				'pod'    => $pod,
-				'name'   => $name,
-				'label'  => $label,
-			] );
-		}
-
-		foreach ( $fields as $field ) {
-			$api->save_field( [
-				'id'           => $field->get_id(),
-				'pod_data'     => $pod,
-				'field'        => $field,
-				'new_group_id' => $group_id,
-			], false );
-
-			$field->set_arg( 'group_id', $group_id );
-		}
-
-		$pod->set_arg( '_migrated_28', 1 );
-
-		$api->save_pod( $pod );
-
-		$pod->flush();
-
-		$api->cache_flush_pods( $pod );
-
-		// Refresh pod object.
-		$pod->flush();
-
-		return $pod;
+		return $results['upgraded_pod'];
 	}
 
 	/**
 	 * Get the global config for Pods admin.
 	 *
-	 * @since 2.8.0
-	 *
-	 * @param null|\Pods\Whatsit $pod
+	 * @param null|\Pods\Whatsit $current_pod
 	 *
 	 * @return array Global config array.
+	 *@since 2.8.0
+	 *
 	 */
-	public function get_global_config( $pod = null ) {
+	public function get_global_config( $current_pod = null ) {
 		$config_pod   = pods_container( Config_Pod::class );
 		$config_group = pods_container( Config_Group::class );
 		$config_field = pods_container( Config_Field::class );
 
 		// Pod: Backwards compatible configs and hooks.
-		$pod_tabs        = $config_pod->get_tabs( $pod );
-		$pod_tab_options = $config_pod->get_fields( $pod, $pod_tabs );
+		$pod_tabs        = $config_pod->get_tabs( $current_pod);
+		$pod_tab_options = $config_pod->get_fields( $current_pod, $pod_tabs );
 
 		$this->backcompat_convert_tabs_to_groups( $pod_tabs, $pod_tab_options, 'pod/_pods_pod' );
 
 		// If not types-only mode, handle groups/fields configs.
-		if ( ! pods_is_types_only() ) {
+		if ( ! pods_is_types_only( false, $current_pod->get_name() ) ) {
 			// Group: Backwards compatible methods and hooks.
-			$group_tabs        = $config_group->get_tabs( $pod );
-			$group_tab_options = $config_group->get_fields( $pod, $group_tabs );
+			$group_tabs        = $config_group->get_tabs( $current_pod);
+			$group_tab_options = $config_group->get_fields( $current_pod, $group_tabs );
 
 			$this->backcompat_convert_tabs_to_groups( $group_tabs, $group_tab_options, 'pod/_pods_group' );
 
 			// Field: Backwards compatible methods and hooks.
-			$field_tabs        = $config_field->get_tabs( $pod );
-			$field_tab_options = $config_field->get_fields( $pod, $field_tabs );
+			$field_tabs        = $config_field->get_tabs( $current_pod);
+			$field_tab_options = $config_field->get_fields( $current_pod, $field_tabs );
 
 			$this->backcompat_convert_tabs_to_groups( $field_tabs, $field_tab_options, 'pod/_pods_field' );
 		}
@@ -1868,50 +2468,60 @@ class PodsAdmin {
 
 		// Get objects from storage.
 		$pod_object = $storage->get( [
-			'object_type' => 'pod',
-			'name'        => '_pods_pod',
+			'object_type'  => 'pod',
+			'name'         => '_pods_pod',
+			'bypass_cache' => true,
 		] );
 
 		$group_object = $storage->get( [
-			'object_type' => 'pod',
-			'name'        => '_pods_group',
+			'object_type'  => 'pod',
+			'name'         => '_pods_group',
+			'bypass_cache' => true,
 		] );
 
 		$field_object = $storage->get( [
-			'object_type' => 'pod',
-			'name'        => '_pods_field',
+			'object_type'  => 'pod',
+			'name'         => '_pods_field',
+			'bypass_cache' => true,
 		] );
 
-		$pod = [
-			'showFields' => ! pods_is_types_only(),
+		$global_config = [
+			'showFields' => ! pods_is_types_only( false, $current_pod->get_name() ),
 			'pod'        => $pod_object->export( [
 				'include_groups'       => true,
 				'include_group_fields' => true,
 				'include_fields'       => false,
 				'include_field_data'   => true,
+				'bypass_cache'         => true,
+                'ref_id'               => 'global/' . $pod_object->get_type() . '/' . $pod_object->get_name(),
 			] ),
 			'group'      => $group_object->export( [
 				'include_groups'       => true,
 				'include_group_fields' => true,
 				'include_fields'       => false,
 				'include_field_data'   => true,
+				'bypass_cache'         => true,
+                'ref_id'               => 'global/' . $pod_object->get_type() . '/' . $pod_object->get_name(),
 			] ),
 			'field'      => $field_object->export( [
 				'include_groups'       => true,
 				'include_group_fields' => true,
 				'include_fields'       => false,
 				'include_field_data'   => true,
+				'bypass_cache'         => true,
+                'ref_id'               => 'global/' . $pod_object->get_type() . '/' . $pod_object->get_name(),
 			] ),
 		];
 
 		/**
 		 * Allow hooking into the global config setup for a Pod.
 		 *
-		 * @param null|\Pods\Whatsit $pod The Pod object.
+		 * @param array              $global_config The global config object.
+		 * @param null|\Pods\Whatsit $current_pod   The Pod object.
 		 */
-		$pod = apply_filters( 'pods_admin_setup_global_config', $pod );
+		$global_config = apply_filters( 'pods_admin_setup_global_config', $global_config, $current_pod );
 
-		return $pod;
+		return $global_config;
 	}
 
 	/**
@@ -2072,14 +2682,15 @@ class PodsAdmin {
 		$field_args['group']  = 'group/' . $parent . '/' . $group_name;
 
 		$dfv_args = (object) [
-			'id'      => 0,
-			'name'    => $field_args['name'],
-			'value'   => '',
-			'pod'     => null,
-			'type'    => pods_v( 'type', $field_args ),
-			'options' => array_merge( [
+			'id'              => 0,
+			'name'            => $field_args['name'],
+			'value'           => '',
+			'pod'             => null,
+			'type'            => pods_v( 'type', $field_args ),
+			'options'         => array_merge( [
 				'id' => 0,
-			], $field_args )
+			], $field_args ),
+			'build_item_data' => true,
 		];
 
 		if ( ! empty( $dfv_args->type ) ) {
@@ -2158,6 +2769,10 @@ class PodsAdmin {
 			return $obj->error( __( 'Pod not found.', 'pods' ) );
 		}
 
+		if ( 'post_type' !== $pod->get_object_storage_type() ) {
+			return $obj->error( __( 'Pod cannot be deleted.', 'pods' ) );
+		}
+
 		pods_api()->delete_pod( array( 'id' => $id ) );
 
 		foreach ( $obj->data as $key => $data_pod ) {
@@ -2175,7 +2790,304 @@ class PodsAdmin {
 	}
 
 	/**
-	 * Restrict Delete action.
+	 * Handle access rights review bulk action to make public for a pod.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param int[]|string[] $ids Item IDs.
+	 * @param PodsUI         $obj PodsUI object.
+	 *
+	 * @return false This always returns false unless there was a real error.
+	 */
+	public function admin_access_rights_review_make_public_bulk( $ids, $obj ) {
+		foreach ( $ids as $id ) {
+			if ( ! $id ) {
+				continue;
+			}
+
+			$this->admin_access_rights_review_make_public( $obj, $id, 'bulk' );
+		}
+
+		$obj->message( __( 'Selected Pod(s) made public successfully.', 'pods' ) );
+
+		$this->update_callout( 'access_rights', false );
+
+		return false;
+	}
+
+	/**
+	 * Handle access rights review action to make public for a pod.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param PodsUI     $obj  PodsUI object.
+	 * @param int|string $id   Item ID.
+	 * @param string     $mode Action mode.
+	 *
+	 * @return mixed
+	 */
+	public function admin_access_rights_review_make_public( $obj, $id, $mode = 'single' ) {
+		$pod = pods_api()->load_pod( [ 'id' => $id ], false );
+
+		if ( empty( $pod ) ) {
+			return 'bulk' !== $mode ? $obj->error( __( 'Pod not found.', 'pods' ) ) : false;
+		}
+
+		if ( 'post_type' !== $pod->get_object_storage_type() || $pod->is_extended() ) {
+			return 'bulk' !== $mode ? $obj->error( __( 'Pod cannot be modified.', 'pods' ) ) : false;
+		}
+
+		$params = [
+			'id' => $id,
+			'public' => 1,
+		];
+
+		if ( in_array( $pod->get_type(), [ 'post_type', 'taxonomy' ], true ) ) {
+			$params['publicly_queryable'] = 1;
+		}
+
+		pods_api()->save_pod( $params );
+
+		foreach ( $obj->data as $key => $data_pod ) {
+			if ( (int) $id === (int) $data_pod['id'] ) {
+				$obj->data[ $key ]['public']      = __( 'Public', 'pods' );
+				$obj->data[ $key ]['real_public'] = 1;
+			}
+		}
+
+		if ( 'bulk' !== $mode ) {
+			$obj->message( __( 'Pod made public successfully.', 'pods' ) );
+
+			$this->update_callout( 'access_rights', false );
+
+			$obj->manage();
+		}
+	}
+
+	/**
+	 * Handle access rights review bulk action to make private for a pod.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param int[]|string[] $ids Item IDs.
+	 * @param PodsUI         $obj PodsUI object.
+	 *
+	 * @return false This always returns false unless there was a real error.
+	 */
+	public function admin_access_rights_review_make_private_bulk( $ids, $obj ) {
+		foreach ( $ids as $id ) {
+			if ( ! $id ) {
+				continue;
+			}
+
+			$this->admin_access_rights_review_make_private( $obj, $id, 'bulk' );
+		}
+
+		$obj->message( __( 'Selected Pod(s) made private successfully.', 'pods' ) );
+
+		$this->update_callout( 'access_rights', false );
+
+		return false;
+	}
+
+	/**
+	 * Handle access rights review action to make private for a pod.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param PodsUI     $obj  PodsUI object.
+	 * @param int|string $id   Item ID.
+	 * @param string     $mode Action mode.
+	 *
+	 * @return mixed
+	 */
+	public function admin_access_rights_review_make_private( $obj, $id, $mode = 'single' ) {
+		$pod = pods_api()->load_pod( [ 'id' => $id ], false );
+
+		if ( empty( $pod ) ) {
+			return 'bulk' !== $mode ? $obj->error( __( 'Pod not found.', 'pods' ) ) : false;
+		}
+
+		if ( 'post_type' !== $pod->get_object_storage_type() || $pod->is_extended() ) {
+			return 'bulk' !== $mode ? $obj->error( __( 'Pod cannot be modified.', 'pods' ) ) : false;
+		}
+
+		$params = [
+			'id' => $id,
+		];
+
+		if ( in_array( $pod->get_type(), [ 'post_type', 'taxonomy' ], true ) ) {
+			$params['publicly_queryable'] = 0;
+		} else {
+			$params['public'] = 0;
+		}
+
+		pods_api()->save_pod( $params );
+
+		foreach ( $obj->data as $key => $data_pod ) {
+			if ( (int) $id === (int) $data_pod['id'] ) {
+				$obj->data[ $key ]['public']      = '🔒 ' . __( 'Private', 'pods' );
+				$obj->data[ $key ]['real_public'] = 0;
+			}
+		}
+
+		if ( 'bulk' !== $mode ) {
+			$obj->message( __( 'Pod made private successfully.', 'pods' ) );
+
+			$this->update_callout( 'access_rights', false );
+
+			$obj->manage();
+		}
+	}
+
+	/**
+	 * Handle access rights review bulk action to restrict dynamic features for a pod.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param int[]|string[] $ids Item IDs.
+	 * @param PodsUI         $obj PodsUI object.
+	 *
+	 * @return false This always returns false unless there was a real error.
+	 */
+	public function admin_access_rights_review_restrict_dynamic_features_bulk( $ids, $obj ) {
+		foreach ( $ids as $id ) {
+			if ( ! $id ) {
+				continue;
+			}
+
+			$this->admin_access_rights_review_restrict_dynamic_features( $obj, $id, 'bulk' );
+		}
+
+		$obj->message( __( 'Selected Pod(s) restricted dynamic features successfully.', 'pods' ) );
+
+		$this->update_callout( 'access_rights', false );
+
+		return false;
+	}
+
+	/**
+	 * Handle access rights review action to restrict dynamic features for a pod.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param PodsUI     $obj  PodsUI object.
+	 * @param int|string $id   Item ID.
+	 * @param string     $mode Action mode.
+	 *
+	 * @return mixed
+	 */
+	public function admin_access_rights_review_restrict_dynamic_features( $obj, $id, $mode = 'single' ) {
+		$pod = pods_api()->load_pod( [ 'id' => $id ], false );
+
+		if ( empty( $pod ) ) {
+			return 'bulk' !== $mode ? $obj->error( __( 'Pod not found.', 'pods' ) ) : false;
+		}
+
+		if ( 'post_type' !== $pod->get_object_storage_type() ) {
+			return 'bulk' !== $mode ? $obj->error( __( 'Pod cannot be modified.', 'pods' ) ) : false;
+		}
+
+		pods_api()->save_pod( [
+			'id'                          => $id,
+			'restrict_dynamic_features'   => '1',
+			'restricted_dynamic_features' => [
+				'display',
+				'form',
+			],
+		] );
+
+		foreach ( $obj->data as $key => $data_pod ) {
+			if ( (int) $id === (int) $data_pod['id'] ) {
+				$obj->data[ $key ]['restricted_dynamic_features'] = pods_access_get_restricted_dynamic_features_options();
+
+				$obj->data[ $key ]['real_restricted_dynamic_features'] = 'restricted';
+			}
+		}
+
+		if ( 'bulk' !== $mode ) {
+			$obj->message( __( 'Pod restricted dynamic features successfully.', 'pods' ) );
+
+			$this->update_callout( 'access_rights', false );
+
+			$obj->manage();
+		}
+	}
+
+	/**
+	 * Handle access rights review bulk action to restrict dynamic features for a pod.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param int[]|string[] $ids Item IDs.
+	 * @param PodsUI         $obj PodsUI object.
+	 *
+	 * @return false This always returns false unless there was a real error.
+	 */
+	public function admin_access_rights_review_unrestrict_dynamic_features_bulk( $ids, $obj ) {
+		foreach ( $ids as $id ) {
+			if ( ! $id ) {
+				continue;
+			}
+
+			$this->admin_access_rights_review_unrestrict_dynamic_features( $obj, $id, 'bulk' );
+		}
+
+		$obj->message( __( 'Selected Pod(s) unrestricted dynamic features successfully.', 'pods' ) );
+
+		$this->update_callout( 'access_rights', false );
+
+		return false;
+	}
+
+	/**
+	 * Handle access rights review action to unrestrict dynamic features for a pod.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param PodsUI     $obj  PodsUI object.
+	 * @param int|string $id   Item ID.
+	 * @param string     $mode Action mode.
+	 *
+	 * @return mixed
+	 */
+	public function admin_access_rights_review_unrestrict_dynamic_features( $obj, $id, $mode = 'single' ) {
+		$pod = pods_api()->load_pod( [ 'id' => $id ], false );
+
+		if ( empty( $pod ) ) {
+			return 'bulk' !== $mode ? $obj->error( __( 'Pod not found.', 'pods' ) ) : false;
+		}
+
+		if ( 'post_type' !== $pod->get_object_storage_type() ) {
+			return 'bulk' !== $mode ? $obj->error( __( 'Pod cannot be modified.', 'pods' ) ) : false;
+		}
+
+		pods_api()->save_pod( [
+			'id'                          => $id,
+			'restrict_dynamic_features'   => '0',
+			'restricted_dynamic_features' => [],
+		] );
+
+		foreach ( $obj->data as $key => $data_pod ) {
+			if ( (int) $id === (int) $data_pod['id'] ) {
+				$obj->data[ $key ]['restricted_dynamic_features']      = __( 'Unrestricted', 'pods' );
+				$obj->data[ $key ]['real_restricted_dynamic_features'] = 'unrestricted';
+			}
+		}
+
+		if ( 'bulk' !== $mode ) {
+			$obj->message( __( 'Pod unrestricted dynamic features successfully.', 'pods' ) );
+
+			$this->update_callout( 'access_rights', false );
+
+			$obj->manage();
+		}
+	}
+
+	/**
+	 * Restrict actions that can't be done for Pods with a non DB source.
+	 *
+	 * @since 3.1.0
 	 *
 	 * @param bool   $restricted Whether action is restricted.
 	 * @param array  $restrict   Restriction array.
@@ -2183,12 +3095,399 @@ class PodsAdmin {
 	 * @param array  $row        Item data row.
 	 * @param PodsUI $obj        PodsUI object.
 	 *
-	 * @since 2.3.10
-	 *
-	 * @return bool
+	 * @return bool Whether the action is restricted.
 	 */
-	public function admin_setup_delete_restrict( $restricted, $restrict, $action, $row, $obj ) {
+	public function admin_restrict_non_db_type( $restricted, $restrict, $action, $row, $obj ) {
 		if ( __( 'DB', 'pods' ) !== $row['source'] ) {
+			$restricted = true;
+		}
+
+		return $restricted;
+	}
+
+	/**
+	 * Restrict actions that can't be done for Pods with a non DB source.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param bool   $restricted Whether action is restricted.
+	 * @param array  $restrict   Restriction array.
+	 * @param string $action     Current action.
+	 * @param array  $row        Item data row.
+	 * @param PodsUI $obj        PodsUI object.
+	 *
+	 * @return bool Whether the action is restricted.
+	 */
+	public function admin_restrict_access_rights_review_make_public( $restricted, $restrict, $action, $row, $obj ) {
+		$restricted = $this->admin_restrict_non_db_type( $restricted, $restrict, $action, $row, $obj );
+
+		if (
+			! $restricted
+			&& (
+				1 === $row['real_public']
+				|| $row['pod_object']->is_extended()
+			)
+		) {
+			$restricted = true;
+		}
+
+		return $restricted;
+	}
+
+	/**
+	 * Restrict actions that can't be done for Pods with a non DB source.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param bool   $restricted Whether action is restricted.
+	 * @param array  $restrict   Restriction array.
+	 * @param string $action     Current action.
+	 * @param array  $row        Item data row.
+	 * @param PodsUI $obj        PodsUI object.
+	 *
+	 * @return bool Whether the action is restricted.
+	 */
+	public function admin_restrict_access_rights_review_make_private( $restricted, $restrict, $action, $row, $obj ) {
+		$restricted = $this->admin_restrict_non_db_type( $restricted, $restrict, $action, $row, $obj );
+
+		if (
+			! $restricted
+			&& (
+				0 === $row['real_public']
+				|| $row['pod_object']->is_extended()
+			)
+		) {
+			$restricted = true;
+		}
+
+		return $restricted;
+	}
+
+	/**
+	 * Restrict actions that can't be done for Pods with a non DB source.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param bool   $restricted Whether action is restricted.
+	 * @param array  $restrict   Restriction array.
+	 * @param string $action     Current action.
+	 * @param array  $row        Item data row.
+	 * @param PodsUI $obj        PodsUI object.
+	 *
+	 * @return bool Whether the action is restricted.
+	 */
+	public function admin_restrict_access_rights_review_restrict_dynamic_features( $restricted, $restrict, $action, $row, $obj ) {
+		$restricted = $this->admin_restrict_non_db_type( $restricted, $restrict, $action, $row, $obj );
+
+		if ( ! $restricted && 'restricted' === $row['real_restricted_dynamic_features'] ) {
+			$restricted = true;
+		}
+
+		return $restricted;
+	}
+
+	/**
+	 * Handle access rights review bulk action to set dynamic features as WP Default for a pod.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param int[]|string[] $ids Item IDs.
+	 * @param PodsUI         $obj PodsUI object.
+	 *
+	 * @return false This always returns false unless there was a real error.
+	 */
+	public function admin_access_rights_review_wp_default_dynamic_features_bulk( $ids, $obj ) {
+		foreach ( $ids as $id ) {
+			if ( ! $id ) {
+				continue;
+			}
+
+			$this->admin_access_rights_review_wp_default_dynamic_features( $obj, $id, 'bulk' );
+		}
+
+		$obj->message( __( 'Selected Pod(s) Dynamic Features set to WP Default successfully.', 'pods' ) );
+
+		$this->update_callout( 'access_rights', false );
+
+		return false;
+	}
+
+	/**
+	 * Handle access rights review bulk action to set dynamic features as WP Default for a pod.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param PodsUI     $obj  PodsUI object.
+	 * @param int|string $id   Item ID.
+	 * @param string     $mode Action mode.
+	 *
+	 * @return mixed
+	 */
+	public function admin_access_rights_review_wp_default_dynamic_features( $obj, $id, $mode = 'single' ) {
+		$pod = pods_api()->load_pod( [ 'id' => $id ], false );
+
+		if ( empty( $pod ) ) {
+			return 'bulk' !== $mode ? $obj->error( __( 'Pod not found.', 'pods' ) ) : false;
+		}
+
+		if ( 'post_type' !== $pod->get_object_storage_type() || $pod->is_extended() ) {
+			return 'bulk' !== $mode ? $obj->error( __( 'Pod cannot be modified.', 'pods' ) ) : false;
+		}
+
+		$is_public = pods_is_type_public(
+			[
+				'pod' => $pod,
+			]
+		);
+
+		$options = pods_access_get_dynamic_features_allow_options();
+		$value   = 'inherit';
+		$label   = $options[ $value ] . ' - ' . ( $is_public ? $options['1'] : $options['0'] );
+
+		pods_api()->save_pod( [ 'id' => $id, 'dynamic_features_allow' => $value ] );
+
+		foreach ( $obj->data as $key => $data_pod ) {
+			if ( (int) $id === (int) $data_pod['id'] ) {
+				$obj->data[ $key ]['dynamic_features_allow']      = $label;
+				$obj->data[ $key ]['real_dynamic_features_allow'] = $value;
+			}
+		}
+
+		if ( 'bulk' !== $mode ) {
+			$obj->message( __( 'Pod Dynamic Features set to WP Default successfully.', 'pods' ) );
+
+			$this->update_callout( 'access_rights', false );
+
+			$obj->manage();
+		}
+	}
+
+	/**
+	 * Restrict actions that can't be done for Pods with a non DB source.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param bool   $restricted Whether action is restricted.
+	 * @param array  $restrict   Restriction array.
+	 * @param string $action     Current action.
+	 * @param array  $row        Item data row.
+	 * @param PodsUI $obj        PodsUI object.
+	 *
+	 * @return bool Whether the action is restricted.
+	 */
+	public function admin_restrict_access_rights_review_wp_default_dynamic_features( $restricted, $restrict, $action, $row, $obj ) {
+		$restricted = $this->admin_restrict_non_db_type( $restricted, $restrict, $action, $row, $obj );
+
+		if ( ! $restricted && 'inherit' === $row['real_dynamic_features_allow'] ) {
+			$restricted = true;
+		}
+
+		return $restricted;
+	}
+
+	/**
+	 * Handle access rights review bulk action to set dynamic features as enabled for a pod.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param int[]|string[] $ids Item IDs.
+	 * @param PodsUI         $obj PodsUI object.
+	 *
+	 * @return false This always returns false unless there was a real error.
+	 */
+	public function admin_access_rights_review_enable_dynamic_features_bulk( $ids, $obj ) {
+		foreach ( $ids as $id ) {
+			if ( ! $id ) {
+				continue;
+			}
+
+			$this->admin_access_rights_review_enable_dynamic_features( $obj, $id, 'bulk' );
+		}
+
+		$obj->message( __( 'Selected Pod(s) Dynamic Features set to Enabled successfully.', 'pods' ) );
+
+		$this->update_callout( 'access_rights', false );
+
+		return false;
+	}
+
+	/**
+	 * Handle access rights review bulk action to set dynamic features as enabled for a pod.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param PodsUI     $obj  PodsUI object.
+	 * @param int|string $id   Item ID.
+	 * @param string     $mode Action mode.
+	 *
+	 * @return mixed
+	 */
+	public function admin_access_rights_review_enable_dynamic_features( $obj, $id, $mode = 'single' ) {
+		$pod = pods_api()->load_pod( [ 'id' => $id ], false );
+
+		if ( empty( $pod ) ) {
+			return 'bulk' !== $mode ? $obj->error( __( 'Pod not found.', 'pods' ) ) : false;
+		}
+
+		if ( 'post_type' !== $pod->get_object_storage_type() || $pod->is_extended() ) {
+			return 'bulk' !== $mode ? $obj->error( __( 'Pod cannot be modified.', 'pods' ) ) : false;
+		}
+
+		$options = pods_access_get_dynamic_features_allow_options();
+		$value   = '1';
+		$label   = $options[ $value ];
+
+		pods_api()->save_pod( [ 'id' => $id, 'dynamic_features_allow' => $value ] );
+
+		foreach ( $obj->data as $key => $data_pod ) {
+			if ( (int) $id === (int) $data_pod['id'] ) {
+				$obj->data[ $key ]['dynamic_features_allow']      = $label;
+				$obj->data[ $key ]['real_dynamic_features_allow'] = $value;
+			}
+		}
+
+		if ( 'bulk' !== $mode ) {
+			$obj->message( __( 'Pod Dynamic Features set to Enabled successfully.', 'pods' ) );
+
+			$this->update_callout( 'access_rights', false );
+
+			$obj->manage();
+		}
+	}
+
+	/**
+	 * Restrict actions that can't be done for Pods with a non DB source.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param bool   $restricted Whether action is restricted.
+	 * @param array  $restrict   Restriction array.
+	 * @param string $action     Current action.
+	 * @param array  $row        Item data row.
+	 * @param PodsUI $obj        PodsUI object.
+	 *
+	 * @return bool Whether the action is restricted.
+	 */
+	public function admin_restrict_access_rights_review_enable_dynamic_features( $restricted, $restrict, $action, $row, $obj ) {
+		$restricted = $this->admin_restrict_non_db_type( $restricted, $restrict, $action, $row, $obj );
+
+		if ( ! $restricted && '1' === $row['real_dynamic_features_allow'] ) {
+			$restricted = true;
+		}
+
+		return $restricted;
+	}
+
+	/**
+	 * Handle access rights review bulk action to set dynamic features as disabled for a pod.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param int[]|string[] $ids Item IDs.
+	 * @param PodsUI         $obj PodsUI object.
+	 *
+	 * @return false This always returns false unless there was a real error.
+	 */
+	public function admin_access_rights_review_disable_dynamic_features_bulk( $ids, $obj ) {
+		foreach ( $ids as $id ) {
+			if ( ! $id ) {
+				continue;
+			}
+
+			$this->admin_access_rights_review_disable_dynamic_features( $obj, $id, 'bulk' );
+		}
+
+		$obj->message( __( 'Selected Pod(s) Dynamic Features set to Disabled successfully.', 'pods' ) );
+
+		$this->update_callout( 'access_rights', false );
+
+		return false;
+	}
+
+	/**
+	 * Handle access rights review bulk action to set dynamic features as disabled for a pod.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param PodsUI     $obj  PodsUI object.
+	 * @param int|string $id   Item ID.
+	 * @param string     $mode Action mode.
+	 *
+	 * @return mixed
+	 */
+	public function admin_access_rights_review_disable_dynamic_features( $obj, $id, $mode = 'single' ) {
+		$pod = pods_api()->load_pod( [ 'id' => $id ], false );
+
+		if ( empty( $pod ) ) {
+			return 'bulk' !== $mode ? $obj->error( __( 'Pod not found.', 'pods' ) ) : false;
+		}
+
+		if ( 'post_type' !== $pod->get_object_storage_type() || $pod->is_extended() ) {
+			return 'bulk' !== $mode ? $obj->error( __( 'Pod cannot be modified.', 'pods' ) ) : false;
+		}
+
+		$options = pods_access_get_dynamic_features_allow_options();
+		$value   = '0';
+		$label   = $options[ $value ];
+
+		pods_api()->save_pod( [ 'id' => $id, 'dynamic_features_allow' => $value ] );
+
+		foreach ( $obj->data as $key => $data_pod ) {
+			if ( (int) $id === (int) $data_pod['id'] ) {
+				$obj->data[ $key ]['dynamic_features_allow']      = $label;
+				$obj->data[ $key ]['real_dynamic_features_allow'] = $value;
+			}
+		}
+
+		if ( 'bulk' !== $mode ) {
+			$obj->message( __( 'Pod Dynamic Features set to Disabled successfully.', 'pods' ) );
+
+			$this->update_callout( 'access_rights', false );
+
+			$obj->manage();
+		}
+	}
+
+	/**
+	 * Restrict actions that can't be done for Pods with a non DB source.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param bool   $restricted Whether action is restricted.
+	 * @param array  $restrict   Restriction array.
+	 * @param string $action     Current action.
+	 * @param array  $row        Item data row.
+	 * @param PodsUI $obj        PodsUI object.
+	 *
+	 * @return bool Whether the action is restricted.
+	 */
+	public function admin_restrict_access_rights_review_disable_dynamic_features( $restricted, $restrict, $action, $row, $obj ) {
+		$restricted = $this->admin_restrict_non_db_type( $restricted, $restrict, $action, $row, $obj );
+
+		if ( ! $restricted && '0' === $row['real_dynamic_features_allow'] ) {
+			$restricted = true;
+		}
+
+		return $restricted;
+	}
+
+	/**
+	 * Restrict actions that can't be done for Pods with a non DB source.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param bool   $restricted Whether action is restricted.
+	 * @param array  $restrict   Restriction array.
+	 * @param string $action     Current action.
+	 * @param array  $row        Item data row.
+	 * @param PodsUI $obj        PodsUI object.
+	 *
+	 * @return bool Whether the action is restricted.
+	 */
+	public function admin_restrict_access_rights_review_unrestrict_dynamic_features( $restricted, $restrict, $action, $row, $obj ) {
+		$restricted = $this->admin_restrict_non_db_type( $restricted, $restrict, $action, $row, $obj );
+
+		if ( ! $restricted && 'unrestricted' === $row['real_restricted_dynamic_features'] ) {
 			$restricted = true;
 		}
 
@@ -2207,6 +3506,9 @@ class PodsAdmin {
 	 * Get settings administration view
 	 */
 	public function admin_settings() {
+		// Add our custom callouts.
+		$this->handle_callouts_updates();
+
 		/**
 		 * Allow hooking into our settings page to set up hooks.
 		 *
@@ -2215,7 +3517,11 @@ class PodsAdmin {
 		do_action( 'pods_admin_settings_init' );
 
 		// Add our custom callouts.
-		add_action( 'pods_admin_after_settings', array( $this, 'admin_manage_callouts' ) );
+		if ( $this->has_horizontal_callout() ) {
+			add_action( 'pods_admin_before_settings', [ $this, 'admin_manage_callouts' ] );
+		} else {
+			add_action( 'pods_admin_after_settings', [ $this, 'admin_manage_callouts' ] );
+		}
 
 		pods_view( PODS_DIR . 'ui/admin/settings.php', compact( array_keys( get_defined_vars() ) ) );
 	}
@@ -2297,6 +3603,34 @@ class PodsAdmin {
 
 			if ( ! empty( $component_data['URI'] ) ) {
 				$meta[] = '<a href="' . $component_data['URI'] . '">' . __( 'Visit component site', 'pods' ) . '</a>';
+			}
+
+			if ( pods_is_truthy( pods_v( 'Deprecated', $component_data, false ) ) ) {
+				$deprecated = __( 'Deprecated', 'pods' );
+
+				$component_data['Name'] .= sprintf(
+					' <em style="font-weight: normal; color:#333;">(%s)</em>',
+					$deprecated
+				);
+
+				$deprecated_in_version      = pods_v( 'DeprecatedInVersion', $component_data );
+				$deprecated_removal_version = pods_v( 'DeprecatedRemovalVersion', $component_data );
+
+				if ( empty( $deprecated_removal_version ) ) {
+					// translators: TBD means To Be Determined.
+					$deprecated_removal_version = __( 'TBD', 'pods' );
+				}
+
+				if ( $deprecated_in_version ) {
+					$deprecated = sprintf(
+					// translators: %1$s is the version the deprecation starts and %2$s is the version the code will be removed.
+						__( 'Deprecated in %1$s, will be removed in %2$s', 'pods' ),
+						$deprecated_in_version,
+						$deprecated_removal_version
+					);
+				}
+
+				$meta[] = $deprecated;
 			}
 
 			$component_data['Description'] = wpautop( trim( make_clickable( strip_tags( $component_data['Description'], 'em,strong' ) ) ) );
@@ -2414,7 +3748,12 @@ class PodsAdmin {
 		$this->handle_callouts_updates();
 
 		add_filter( 'pods_ui_manage_custom_container_classes', array( $this, 'admin_manage_container_class' ) );
-		add_action( 'pods_ui_manage_after_container', array( $this, 'admin_manage_callouts' ) );
+
+		if ( $this->has_horizontal_callout() ) {
+			add_action( 'pods_ui_manage_before_container', [ $this, 'admin_manage_callouts' ] );
+		} else {
+			add_action( 'pods_ui_manage_after_container', [ $this, 'admin_manage_callouts' ] );
+		}
 
 		pods_ui( $ui );
 	}
@@ -2559,11 +3898,14 @@ class PodsAdmin {
 	 * Get the admin help page
 	 */
 	public function admin_help() {
-
 		// Add our custom callouts.
 		$this->handle_callouts_updates();
 
-		add_action( 'pods_admin_after_help', array( $this, 'admin_manage_callouts' ) );
+		if ( $this->has_horizontal_callout() ) {
+			add_action( 'pods_admin_before_help', [ $this, 'admin_manage_callouts' ] );
+		} else {
+			add_action( 'pods_admin_after_help', [ $this, 'admin_manage_callouts' ] );
+		}
 
 		pods_view( PODS_DIR . 'ui/admin/help.php', compact( array_keys( get_defined_vars() ) ) );
 	}
@@ -2609,7 +3951,7 @@ class PodsAdmin {
 			} elseif ( 'post_type' === $pod['type'] ) {
 				$capability_type = pods_v_sanitized( 'capability_type_custom', $pod['options'], pods_v( 'name', $pod ) );
 
-				if ( 'custom' === pods_v( 'capability_type', $pod['options'] ) && 0 < strlen( $capability_type ) ) {
+				if ( 'custom' === pods_v( 'capability_type', $pod['options'] ) && is_string( $capability_type ) && 0 < strlen( $capability_type ) ) {
 					$capabilities[] = 'read_' . $capability_type;
 					$capabilities[] = 'edit_' . $capability_type;
 					$capabilities[] = 'delete_' . $capability_type;
@@ -2739,13 +4081,13 @@ class PodsAdmin {
 		$params = (object) $params;
 
 		$methods = array(
-			'add_pod'                 => array( 'priv' => true ),
-			'save_pod'                => array( 'priv' => true ),
-			'load_sister_fields'      => array( 'priv' => true ),
-			'process_form'            => array( 'custom_nonce' => true ),
+			'add_pod'            => array( 'priv' => true ),
+			'save_pod'           => array( 'priv' => true ),
+			'load_sister_fields' => array( 'priv' => true ),
+			'process_form'       => array( 'custom_nonce' => true ),
 			// priv handled through nonce
-							'upgrade' => array( 'priv' => true ),
-			'migrate'                 => array( 'priv' => true ),
+			'upgrade'            => array( 'priv' => true ),
+			'migrate'            => array( 'priv' => true ),
 		);
 
 		/**
@@ -2770,7 +4112,14 @@ class PodsAdmin {
 
 		$method = (object) array_merge( $defaults, (array) $methods[ $params->method ] );
 
-		if ( true !== $method->custom_nonce && ( ! isset( $params->_wpnonce ) || false === wp_verify_nonce( $params->_wpnonce, 'pods-' . $params->method ) ) ) {
+		if (
+			true !== $method->custom_nonce
+			&& (
+				! is_user_logged_in()
+				|| ! isset( $params->_wpnonce )
+				|| false === wp_verify_nonce( $params->_wpnonce, 'pods-' . $params->method )
+			)
+		) {
 			pods_error( __( 'Unauthorized request', 'pods' ), $this );
 		}
 
@@ -2783,8 +4132,13 @@ class PodsAdmin {
 		}
 
 		// Check permissions (convert to array to support multiple)
-		if ( ! empty( $method->priv ) && ! pods_is_admin( array( 'pods' ) ) && true !== $method->priv && ! pods_is_admin( $method->priv ) ) {
-			pods_error( __( 'Access denied', 'pods' ), $this );
+		if ( ! empty( $method->priv ) && ! pods_is_admin( array( 'pods' ) ) ) {
+			if ( true !== $method->priv && pods_is_admin( $method->priv ) ) {
+				// They have access to the custom priv.
+			} else {
+				// They do not have access.
+				pods_error( __( 'Access denied', 'pods' ), $this );
+			}
 		}
 
 		$params->method = $method->name;
@@ -3004,7 +4358,7 @@ class PodsAdmin {
 	 * @since 0.1.0
 	 *
 	 * @param array $options Tab options.
-	 * @param array $pod     Pod options.
+	 * @param Pod   $pod     Pod options.
 	 *
 	 * @return array
 	 */
@@ -3055,6 +4409,7 @@ class PodsAdmin {
 				'label'             => __( 'Field Mode', 'pods' ),
 				'help'              => __( 'Specify how you would like your values returned in the REST API responses. If you choose to show Both raw and rendered values then an object will be returned for each field that contains the value and rendered properties.', 'pods' ),
 				'type'              => 'pick',
+				'pick_format_single' => 'radio',
 				'default'           => 'value',
 				'depends-on'        => [ 'rest_enable' => true ],
 				'data'       => [
@@ -3063,7 +4418,28 @@ class PodsAdmin {
 					'value_and_render' => __( 'Both raw and rendered values {value: raw_value, rendered: rendered_value}', 'pods' ),
 				],
 			],
+			'rest_api_field_location'   => [
+				'label'              => __( 'Field Location', 'pods' ),
+				'help'               => __( 'Specify where you would like your values returned in the REST API responses. To show in the "meta" object of the response, you must have Custom Fields enabled in the Post Type Supports features.', 'pods' ),
+				'type'               => 'pick',
+				'pick_format_single' => 'radio',
+				'default'            => 'object',
+				'depends-on'         => [ 'rest_enable' => true ],
+				'data'               => [
+					'object' => __( 'Show as a custom object field (response.field_name)', 'pods' ),
+					'meta'   => __( 'Include in the meta object (response.meta.field_name)', 'pods' ),
+				],
+			],
 		];
+
+		if ( ! $pod->is_extended() ) {
+			unset( $options['rest_base'] );
+			unset( $options['rest_namespace'] );
+		}
+
+		if ( 'post_type' !== $pod->get_type() ) {
+			unset( $options['rest_api_field_location'] );
+		}
 
 		return $options;
 	}
@@ -3083,46 +4459,71 @@ class PodsAdmin {
 			return $options;
 		}
 
-		$options['rest'][ __( 'Read/ Write', 'pods' ) ] = [
-			'rest_read'  => [
-				'label'   => __( 'Read via REST API', 'pods' ),
-				'help'    => __( 'Should this field be readable via the REST API? You must enable REST API support for this Pod.', 'pods' ),
-				'type'    => 'boolean',
-				'default' => '',
-			],
-			'rest_write' => [
-				'label'   => __( 'Write via REST API', 'pods' ),
-				'help'    => __( 'Should this field be writeable via the REST API? You must enable REST API support for this Pod.', 'pods' ),
-				'type'    => 'boolean',
-				'default' => '',
-			],
-		];
+		$layout_non_input_field_types = PodsForm::layout_field_types() + PodsForm::non_input_field_types();
 
-		$options['rest'][ __( 'Relationship Field Options', 'pods' ) ] = [
-			'rest_pick_response' => [
-				'label'      => __( 'Response Type', 'pods' ),
-				'help'       => __( 'This will determine what amount of data for the related items will be returned.', 'pods' ),
-				'type'       => 'pick',
-				'default'    => 'array',
+		$options['rest'] = [
+			'rest_read_write'    => [
+				'name'  => 'rest_read_write',
+				'type'  => 'heading',
+				'label' => __( 'Read/Write', 'pods' ),
+			],
+			'rest_read'          => [
+				'label'       => __( 'Read via REST API', 'pods' ),
+				'help'        => __( 'Should this field be readable via the REST API? You must enable REST API support for this Pod.', 'pods' ),
+				'type'        => 'boolean',
+				'default'     => '',
+				'excludes-on' => [
+					'type' => $layout_non_input_field_types,
+				],
+			],
+			'rest_write'         => [
+				'label'       => __( 'Write via REST API', 'pods' ),
+				'help'        => __( 'Should this field be writeable via the REST API? You must enable REST API support for this Pod.', 'pods' ),
+				'type'        => 'boolean',
+				'default'     => '',
+				'excludes-on' => [
+					'type' => $layout_non_input_field_types,
+				],
+			],
+			'rest_field_options' => [
+				'name'       => 'rest_field_options',
+				'label'      => __( 'Relationship Field Options', 'pods' ),
+				'type'       => 'heading',
 				'depends-on' => [
 					'type' => 'pick',
 				],
-				'dependency' => true,
-				'data'       => [
+			],
+			'rest_pick_response' => [
+				'label'              => __( 'Response Type', 'pods' ),
+				'help'               => __( 'This will determine what amount of data for the related items will be returned.', 'pods' ),
+				'type'               => 'pick',
+				'pick_format_single' => 'dropdown',
+				'default'            => 'array',
+				'depends-on'         => [
+					'type' => 'pick',
+				],
+				'dependency'         => true,
+				'data'               => [
 					'array'  => __( 'All fields', 'pods' ),
 					'id'     => __( 'ID only', 'pods' ),
 					'name'   => __( 'Name only', 'pods' ),
 					'custom' => __( 'Custom return (specify field to return)', 'pods' ),
 				],
+				'excludes-on'        => [
+					'type' => $layout_non_input_field_types,
+				],
 			],
 			'rest_pick_depth'    => [
-				'label'      => __( 'Depth', 'pods' ),
-				'help'       => __( 'How far to traverse relationships in response. 1 will get you all of the fields on the related item. 2 will get you all of those fields plus related items and their fields. The higher the depth, the more data will be returned and the slower performance the REST API calls will be. Updates to this field do NOT take depth into account, so you will always send the ID of the related item when saving.', 'pods' ),
-				'type'       => 'number',
-				'default'    => '1',
-				'depends-on' => [
+				'label'       => __( 'Depth', 'pods' ),
+				'help'        => __( 'How far to traverse relationships in response. 1 will get you all of the fields on the related item. 2 will get you all of those fields plus related items and their fields. The higher the depth, the more data will be returned and the slower performance the REST API calls will be. Updates to this field do NOT take depth into account, so you will always send the ID of the related item when saving.', 'pods' ),
+				'type'        => 'number',
+				'default'     => '1',
+				'depends-on'  => [
 					'type'               => 'pick',
 					'rest_pick_response' => 'array',
+				],
+				'excludes-on' => [
+					'type' => $layout_non_input_field_types,
 				],
 			],
 			'rest_pick_custom'   => [
@@ -3135,12 +4536,9 @@ class PodsAdmin {
 					'type'               => 'pick',
 					'rest_pick_response' => 'custom',
 				],
-			],
-			'rest_pick_notice'   => [
-				'label'        => 'Relationship Options',
-				'type'         => 'html',
-				'html_content' => __( 'If you have a relationship field, you will see additional options to customize here.', 'pods' ),
-				'excludes-on'  => [ 'type' => 'pick' ],
+				'excludes-on' => [
+					'type' => $layout_non_input_field_types,
+				],
 			],
 		];
 
@@ -3189,9 +4587,11 @@ class PodsAdmin {
 
 		$settings = pods_container( Settings::class );
 
-		$fields = $settings->get_setting_fields();
+		$settings_fields = $settings->get_setting_fields();
 
-		$auto_start = pods_v( $auto_start, $fields['session_auto_start']['data'], __( 'Unknown', 'pods' ) );
+		$settings_values = $settings->get_settings();
+
+		$auto_start = pods_v( $auto_start, $settings_fields['session_auto_start']['data'], __( 'Unknown', 'pods' ) );
 
 		global $wpdb;
 
@@ -3199,6 +4599,18 @@ class PodsAdmin {
 			'label'       => 'Pods',
 			'description' => __( 'Debug information for Pods installations.', 'pods' ),
 			'fields'      => [
+				'pods-version'                       => [
+					'label' => __( 'Pods Version', 'pods' ),
+					'value' => PODS_VERSION,
+				],
+				'pods-first-version'                 => [
+					'label' => __( 'Pods Version (First installed)', 'pods' ),
+					'value' => get_option( 'pods_framework_version_first', PODS_VERSION ),
+				],
+				'pods-last-version'                  => [
+					'label' => __( 'Pods Version (Last updated from)', 'pods' ),
+					'value' => get_option( 'pods_framework_version_last', PODS_VERSION ),
+				],
 				'pods-server-software'               => [
 					'label' => __( 'Server Software', 'pods' ),
 					'value' => ! empty( $_SERVER['SERVER_SOFTWARE'] ) ? $_SERVER['SERVER_SOFTWARE'] : 'N/A',
@@ -3261,7 +4673,7 @@ class PodsAdmin {
 				],
 				'pods-memory-current-usage'          => [
 					'label' => __( 'Current Memory Usage', 'pods' ),
-					'value' => number_format_i18n( memory_get_usage() / 1024 / 1024, 3 ) . 'M',
+					'value' => number_format_i18n( memory_get_usage() / 1024 / 1024, 3 ) . 'M' . ( defined( 'WP_MEMORY_LIMIT' ) ? ' / ' . WP_MEMORY_LIMIT : '' ),
 				],
 				'pods-memory-current-usage-real'     => [
 					'label' => __( 'Current Memory Usage (real)', 'pods' ),
@@ -3287,6 +4699,10 @@ class PodsAdmin {
 					'label' => __( 'Pods Relationship Table Enabled', 'pods' ),
 					'value' => ( pods_podsrel_enabled() ) ? __( 'Yes', 'pods' ) : __( 'No', 'pods' ),
 				],
+				'pods-relationship-table-status'     => [
+					'label' => __( 'Pods Relationship Table Count' ),
+					'value' => ( ! pods_tableless() ? number_format( (float) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->prefix}podsrel" ) ) : 'No table' ),
+				],
 				'pods-light-mode'                    => [
 					'label' => __( 'Pods Light Mode Activated', 'pods' ),
 					'value' => ( pods_light() ) ? __( 'Yes', 'pods' ) : __( 'No', 'pods' ),
@@ -3307,20 +4723,67 @@ class PodsAdmin {
 					'label' => __( 'Pods Shortcode Allow Evaluate Tags' ),
 					'value' => ( pods_shortcode_allow_evaluate_tags() ) ? __( 'Yes', 'pods' ) : __( 'No', 'pods' ),
 				],
-				'pods-sessions'                      => [
-					'label' => __( 'Pods Sessions' ),
-					'value' => $auto_start,
-				],
 				'pods-can-use-sessions'              => [
 					'label' => __( 'Pods Can Use Sessions' ),
 					'value' => ( pods_can_use_sessions( true ) ) ? __( 'Yes', 'pods' ) : __( 'No', 'pods' ),
 				],
-				'pods-relationship-table-status'              => [
-					'label' => __( 'Pods Relationship Table Count' ),
-					'value' => ( ! pods_tableless() ? number_format( (float) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->prefix}podsrel" ) ) : 'No table' ),
-				],
 			],
 		];
+
+		foreach ( $settings_fields as $setting_name => $setting_field ) {
+			if ( empty( $setting_field['site_health_include_in_info'] ) ) {
+				continue;
+			}
+
+			if ( isset( $setting_field['name'] ) ) {
+				$setting_name = $setting_field['name'];
+			}
+
+			$setting_key = 'pods-settings-' . sanitize_title_with_dashes( $setting_name );
+
+			$value = pods_v( $setting_name, $settings_values );
+
+			$original_value = is_array( $value ) ? implode( ',', $value ) : (string) $value;
+
+			if ( is_array( $value ) ) {
+				foreach ( $value as $k => $v ) {
+					$v = (string) $v;
+
+					$has_v = 0 < strlen( $v );
+
+					if ( $has_v && isset( $setting_field['site_health_data'] ) && isset( $setting_field['site_health_data'][ $v ] ) ) {
+						$value[ $k ] = $setting_field['site_health_data'][ $v ];
+					} elseif ( $has_v && isset( $setting_field['data'] ) && isset( $setting_field['data'][ $v ] ) ) {
+						$value[ $k ] = $setting_field['data'][ $v ];
+					}
+				}
+
+				$value = pods_serial_comma( $value );
+			} else {
+				$value = (string) $value;
+
+				$has_value = 0 < strlen( $value );
+
+				if ( $has_value && isset( $setting_field['site_health_data'] ) && isset( $setting_field['site_health_data'][ $value ] ) ) {
+					$value = $setting_field['site_health_data'][ $value ];
+				} elseif ( $has_value && isset( $setting_field['data'] ) && isset( $setting_field['data'][ $value ] ) ) {
+					$value = $setting_field['data'][ $value ];
+				} elseif ( 'boolean' === $setting_field['data'] || '1' === $value || '0' === $value ) {
+					$value = '1' === $value ? __( 'Yes', 'pods' ) : __( 'No', 'pods' );
+				}
+			}
+
+			if ( 'unknown' === $value || '' === $value ) {
+				$value = __( 'Unknown', 'pods' );
+			}
+
+			$info['pods']['fields'][ $setting_key ] = [
+				'label' => $setting_field['label'],
+				'value' => $value . ( $value !== $original_value ? ' [' . $setting_name . '=' . $original_value . ']' : '' ),
+			];
+		}
+
+		// @todo Later we should add which components are active.
 
 		return $info;
 	}
@@ -3410,7 +4873,13 @@ class PodsAdmin {
 		$page = isset( $_GET['page'] ) ? $_GET['page'] : '';
 
 		// We only show on the plugins.php page or on Pods Admin pages.
-		if ( ( 'plugins.php' !== $pagenow && 0 !== strpos( $page, 'pods' ) ) || 0 === strpos( $page, 'pods-content' ) ) {
+		if (
+			(
+				'plugins.php' !== $pagenow
+				&& 0 !== strpos( $page, 'pods' )
+			)
+			|| 0 === strpos( $page, 'pods-manage-' )
+		) {
 			return false;
 		}
 

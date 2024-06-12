@@ -1,7 +1,4 @@
 <?php
-if ( class_exists( 'Pods_PFAT' ) ) {
-	return;
-}
 
 /**
  * Class Pods_Templates_Auto_Template_Settings
@@ -204,6 +201,7 @@ class Pods_Templates_Auto_Template_Settings {
 					$default_single_hooks[ $type ] => sprintf( __( 'Filter: %s', 'pods' ), $default_single_hooks[ $type ] ),
 					'custom'                       => __( 'Use a custom hook', 'pods' ),
 				),
+				'pick_format_single' => 'dropdown',
 				'depends-on' => array( 'pfat_enable' => true ),
 				'excludes-on' => array( 'pfat_single' => '' ),
 				'dependency' => true,
@@ -240,6 +238,7 @@ class Pods_Templates_Auto_Template_Settings {
 					$default_archive_hooks[ $type ] => sprintf( __( 'Filter: %s', 'pods' ), $default_archive_hooks[ $type ] ),
 					'custom'                        => __( 'Use a custom hook', 'pods' ),
 				),
+				'pick_format_single' => 'dropdown',
 				'depends-on' => array( 'pfat_enable' => true ),
 				'excludes-on' => array( 'pfat_archive' => '' ),
 				'dependency' => true,
@@ -400,8 +399,9 @@ class Pods_Templates_Auto_Template_Settings {
 		$archive_test = pods_transient_get( $key );
 
 		if ( $archive_test === false ) {
-			$front     = $this->front_end( true );
-			$auto_pods = $front->auto_pods();
+			$archive_test = [];
+			$front        = $this->front_end( true );
+			$auto_pods    = $front->auto_pods();
 
 			foreach ( $auto_pods as $name => $pod ) {
 				if ( ! $pod['has_archive'] && $pod['archive'] && 'post_type' === $pod['type'] && ! in_array(
@@ -415,12 +415,11 @@ class Pods_Templates_Auto_Template_Settings {
 				}
 			}
 
-			pods_transient_set( $key, $archive_test, WEEK_IN_SECONDS );
+			pods_transient_set( $key, $archive_test ?: false, WEEK_IN_SECONDS );
 
 		}
 
 		return $archive_test;
-
 	}
 
 	/**

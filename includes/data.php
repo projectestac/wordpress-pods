@@ -3,6 +3,7 @@
  * @package Pods\Global\Functions\Data
  */
 
+use Pods\Whatsit;
 use Pods\Whatsit\Field;
 
 /**
@@ -660,6 +661,8 @@ function pods_v( $var = null, $type = 'get', $default = null, $strict = false, $
 			case 'globals':
 				if ( isset( $GLOBALS[ $var ] ) ) {
 					$output = $GLOBALS[ $var ];
+
+					$output = pods_access_bleep_data( $output );
 				}
 				break;
 			case 'cookie':
@@ -673,17 +676,17 @@ function pods_v( $var = null, $type = 'get', $default = null, $strict = false, $
 				}
 				break;
 			case 'user':
+				// Prevent deprecation notice from WP.
+				if ( 'id' === $var ) {
+					$var = 'ID';
+				}
+
 				if ( is_user_logged_in() ) {
 					$user = get_userdata( get_current_user_id() );
 
-					// Prevent deprecation notice from WP.
-					if ( 'id' === $var ) {
-						$var = 'ID';
-					}
+					$user = pods_access_bleep_data( $user );
 
-					if ( 'user_pass' === $var || 'user_activation_key' === $var ) {
-						$value = '';
-					} elseif ( isset( $user->{$var} ) ) {
+					if ( isset( $user->{$var} ) ) {
 						$value = $user->{$var};
 					} elseif ( 'role' === $var ) {
 						$value = '';
@@ -700,7 +703,10 @@ function pods_v( $var = null, $type = 'get', $default = null, $strict = false, $
 					} elseif ( ! is_array( $value ) && 0 < strlen( $value ) ) {
 						$output = $value;
 					}
-				}//end if
+				} elseif ( 'ID' === $var ) {
+					// Return 0 when logged out and calling the ID.
+					$output = 0;
+				}
 				break;
 			case 'option':
 				$output = get_option( $var, $default );
@@ -1215,10 +1221,14 @@ function pods_query_arg( $array = null, $allowed = null, $excluded = null, $url 
 
 	if ( ! empty( $array ) ) {
 		foreach ( $array as $key => $val ) {
-			if ( null !== $val || false === strpos( $key, '*' ) ) {
-				if ( is_array( $val ) && ! empty( $val ) ) {
+			$is_value_null = null === $val;
+
+			if ( ! $is_value_null || false === strpos( $key, '*' ) ) {
+				$is_value_array = is_array( $val );
+
+				if ( $is_value_array && ! empty( $val ) ) {
 					$query_args[ $key ] = $val;
-				} elseif ( ! is_array( $val ) && 0 < strlen( $val ) ) {
+				} elseif ( ! $is_value_null && ! $is_value_array && 0 < strlen( $val ) ) {
 					$query_args[ $key ] = $val;
 				} else {
 					$query_args[ $key ] = false;
@@ -1288,18 +1298,18 @@ function pods_cast( $value, $cast_from = null ) {
 }
 
 /**
- * Create a slug from an input string
- *
- * @param string $orig   Original string.
- * @param bool   $strict Whether to only support 0-9, a-z, A-Z, and dash characters.
- *
- * @return string Sanitized slug
+ * Create a sanitized slug from a value.
  *
  * @since 1.8.9
+ *
+ * @param string $value  The value to create the slug from.
+ * @param bool   $strict Whether to only support 0-9, a-z, A-Z, and dash characters.
+ *
+ * @return string The sanitized slug.
  */
-function pods_create_slug( $orig, $strict = true ) {
-	$str = remove_accents( $orig );
-	$str = preg_replace( '/([_ \\/])/', '-', trim( $orig ) );
+function pods_create_slug( $value, $strict = true ) {
+	$str = remove_accents( $value );
+	$str = preg_replace( '/([_ \\/])/', '-', trim( $str ) );
 
 	if ( $strict ) {
 		$str = preg_replace( '/([^0-9a-z\-])/', '', strtolower( $str ) );
@@ -1309,9 +1319,17 @@ function pods_create_slug( $orig, $strict = true ) {
 
 	$str = preg_replace( '/(\-){2,}/', '-', $str );
 	$str = trim( $str, '-' );
-	$str = apply_filters( 'pods_create_slug', $str, $orig );
 
-	return $str;
+	/**
+	 * Allow filtering the sanitized slug.
+	 *
+	 * @since 1.8.9
+	 *
+	 * @param string $str    The sanitized slug.
+	 * @param string $value  The value to create the slug from.
+	 * @param bool   $strict Whether to only support 0-9, a-z, A-Z, and dash characters.
+	 */
+	return (string) apply_filters( 'pods_create_slug', $str, $value );
 }
 
 /**
@@ -1398,7 +1416,11 @@ function pods_unique_slug( $slug, $column_name, $pod, $pod_id = 0, $id = 0, $obj
  * @since 1.2.0
  */
 function pods_clean_name( $orig, $lower = true, $trim_underscores = false ) {
-	$str = trim( $orig );
+	if ( null === $orig ) {
+		return '';
+	}
+
+	$str = trim( (string) $orig );
 	$str = remove_accents( $str );
 	$str = preg_replace( '/([^0-9a-zA-Z\-_\s])/', '', $str );
 	$str = preg_replace( '/(\s_)/', '_', $str );
@@ -1464,6 +1486,12 @@ function pods_js_camelcase_name( $orig ) {
  * @since 2.0.0
  */
 function pods_absint( $maybeint, $strict = true, $allow_negative = false ) {
+	if ( is_null( $maybeint ) ) {
+		$maybeint = 0;
+	} elseif ( is_bool( $maybeint ) ) {
+		$maybeint = (int) $maybeint;
+	}
+
 	if ( true === $strict && ! is_numeric( trim( $maybeint ) ) ) {
 		return 0;
 	}
@@ -1933,18 +1961,33 @@ function pods_serial_comma( $value, $field = null, $fields = null, $and = null, 
 			$format = pods_v( 'repeatable_format', $params->field, 'default', true );
 
 			if ( 'default' !== $format ) {
-				$params->serial = false;
 
-				if ( 'custom' === $format ) {
-					$separator = pods_v( 'repeatable_format_separator', $params->field );
+				switch ( $format ) {
+					case 'ul':
+					case 'ol':
+						$value = '<' . $format . '><li>' . implode( '</li><li>', (array) $value ) . '</li></' . $format . '>';
+					break;
+					case 'br':
+						if ( is_array( $value ) ) {
+							$value = implode( '<br />', $value );
+						}
+					break;
+					case 'non_serial':
+						$params->serial = false;
+					break;
+					case 'custom':
+						$params->serial = false;
 
-					// Default to comma separator.
-					if ( '' === $separator ) {
-						$separator = ', ';
-					}
+						$separator = pods_v( 'repeatable_format_separator', $params->field );
 
-					$params->and       = $separator;
-					$params->separator = $separator;
+						// Default to comma separator.
+						if ( '' === $separator ) {
+							$separator = ', ';
+						}
+
+						$params->and       = $separator;
+						$params->separator = $separator;
+					break;
 				}
 			}
 		}
@@ -1978,15 +2021,7 @@ function pods_serial_comma( $value, $field = null, $fields = null, $and = null, 
 		return $value;
 	}
 
-	// If something happens with table info, and this is a single select relationship, avoid letting user pass through.
-	if ( isset( $value['user_pass'] ) ) {
-		unset( $value['user_pass'] );
-
-		// Since we know this is a single select, just pass display name through as the fallback.
-		if ( isset( $value['display_name'] ) ) {
-			$value = array( $value['display_name'] );
-		}
-	}
+	$value = pods_access_bleep_data( $value );
 
 	$original_value = $value;
 
@@ -2464,6 +2499,106 @@ function pods_bool_to_int( $value ) {
 }
 
 /**
+ * Check whether the value is truthy. Handles null, boolean, integer, float, and string validation.
+ *
+ * Strings will check for "1", "true", "on", "yes", and "y".
+ *
+ * @since 2.9.13
+ *
+ * @param null|bool|int|float|string $value The value to check.
+ *
+ * @return bool Whether the value is truthy.
+ */
+function pods_is_truthy( $value ) {
+	// Check for null.
+	if ( is_null( $value ) ) {
+		return false;
+	}
+
+	// Check boolean for true.
+	if ( is_bool( $value ) ) {
+		return true === $value;
+	}
+
+	// Check integer / float for 1.
+	if ( is_int( $value ) || is_float( $value ) ) {
+		return 1 === $value;
+	}
+
+	// We only support strings from this point forward.
+	if ( ! is_string( $value ) ) {
+		return false;
+	}
+
+	// Normalize the string to lowercase.
+	$value = trim( strtolower( $value ) );
+
+	// This is the list of strings we will support as truthy.
+	$supported_strings = [
+		'1'    => true,
+		'true' => true,
+		'on'   => true,
+		'yes'  => true,
+		'y'    => true,
+	];
+
+	return isset( $supported_strings[ $value ] );
+}
+
+/**
+ * Check whether the value is falsey. Handles null, boolean, integer, float, and string validation.
+ *
+ * Strings will check for "0", "false", "off", "no", and "n".
+ *
+ * Note: If the variable type is not supported, this will always return false as it cannot be validated as falsey.
+ *
+ * @since 2.9.13
+ *
+ * @param null|bool|int|float|string $value The value to check.
+ *
+ * @return bool Whether the value is falsey.
+ */
+function pods_is_falsey( $value ) {
+	// Check for null.
+	if ( is_null( $value ) ) {
+		return true;
+	}
+
+	// Check boolean for false.
+	if ( is_bool( $value ) ) {
+		return false === $value;
+	}
+
+	// Check integer / float for 0.
+	if ( is_int( $value ) || is_float( $value ) ) {
+		return 0 === $value;
+	}
+
+	// We only support strings from this point forward.
+	if ( ! is_string( $value ) ) {
+		/*
+		 * This is a falsey check but it seems that if we are checking specifically for a falsey,
+		 * then this cannot be validated so it's not falsey.
+		 */
+		return false;
+	}
+
+	// Normalize the string to lowercase.
+	$value = trim( strtolower( $value ) );
+
+	// This is the list of strings we will support as falsey.
+	$supported_strings = [
+		'0'     => true,
+		'false' => true,
+		'off'   => true,
+		'no'    => true,
+		'n'     => true,
+	];
+
+	return isset( $supported_strings[ $value ] );
+}
+
+/**
  * Make replacements to a string using key=>value pairs.
  *
  * @since 2.8.11
@@ -2678,4 +2813,208 @@ function pods_host_from_url( $url ) {
 	}
 
 	return esc_html( $url_parsed['host'] );
+}
+
+/**
+ * Clone a list of objects.
+ *
+ * @since 2.9.12
+ *
+ * @param object[] $objects The list of objects to clone.
+ *
+ * @return object[] The cloned list of objects.
+ */
+function pods_clone_objects( $objects ) {
+	return array_map( 'pods_clone_object', $objects );
+}
+
+/**
+ * Clone an object.
+ *
+ * @since 2.9.12
+ *
+ * @param object $object The object to clone.
+ *
+ * @return object The cloned object.
+ */
+function pods_clone_object( $object ) {
+	return clone $object;
+}
+
+/**
+ * Get the item object based on object type.
+ *
+ * @param int    $item_id     The item ID.
+ * @param string $object_type The object type.
+ *
+ * @return WP_Post|WP_Term|WP_User|WP_Comment|null The item object or null if not found.
+ */
+function pods_get_item_object( $item_id, $object_type ) {
+	$object = null;
+
+	switch ( $object_type ) {
+		case 'post':
+		case 'post_type':
+		case 'media':
+			$object = get_post( $item_id );
+
+			break;
+		case 'term':
+		case 'taxonomy':
+			$object = get_term( $item_id );
+
+			break;
+		case 'user':
+			$object = get_userdata( $item_id );
+
+			break;
+		case 'comment':
+			$object = get_comment( $item_id );
+
+			break;
+	}
+
+	if ( is_object( $object ) && ! is_wp_error( $object ) ) {
+		return $object;
+	}
+
+	return null;
+}
+
+/**
+ * Filters text content and strips out disallowed HTML.
+ *
+ * This function makes sure that only the allowed HTML element names, attribute
+ * names, attribute values, and HTML entities will occur in the given text string.
+ *
+ * This function expects unslashed data.
+ *
+ * @see wp_kses() for the original code for this.
+ *
+ * @since 3.0
+ *
+ * @param string         $content              Text content to filter.
+ * @param string|array[] $context              The context for which to retrieve tags. Allowed values are 'post',
+ *                                             'strip', 'data', 'entities', or the name of a field filter such as
+ *                                             'pre_user_description', or an array of allowed HTML elements and attributes.
+ * @param array[]        $disallowed_html      An array of disallowed HTML elements and attributes,
+ *                                             or a context name such as 'post'. See wp_kses_allowed_html()
+ *                                             for the list of accepted context names.
+ * @param string[]       $disallowed_protocols Optional. Array of disllowed URL protocols.
+ *                                             Defaults allowing the result of wp_allowed_protocols().
+ *
+ * @return string Filtered content containing only the allowed HTML.
+ */
+function pods_kses_exclude_tags( $content, $context = 'post', $disallowed_html = [], $disallowed_protocols = [] ) {
+	$allowed_protocols = wp_allowed_protocols();
+	$allowed_html      = wp_kses_allowed_html( $context );
+
+	// Maybe disallow some HTML tags / attributes.
+	if ( ! empty( $disallowed_html ) ) {
+		foreach ( $disallowed_html as $tag => $attributes ) {
+			// Check if the tag is allowed.
+			if ( ! isset( $allowed_html[ $tag ] ) ) {
+				continue;
+			}
+
+			// Check if we need to handle attributes or not.
+			if ( is_array( $attributes ) ) {
+				$attributes = array_keys( $attributes );
+
+				foreach ( $attributes as $attribute ) {
+					if ( isset( $allowed_html[ $tag ][ $attribute ] ) ) {
+						unset( $allowed_html[ $tag ][ $attribute ] );
+					}
+				}
+			} else {
+				// Disallow the whole tag.
+				unset( $allowed_html[ $tag ] );
+			}
+		}
+	}
+
+	// Maybe disallow some protocols.
+	if ( ! empty( $disallowed_protocols ) ) {
+		$allowed_protocols = array_values( array_diff( $disallowed_protocols, $allowed_protocols ) );
+	}
+
+	return wp_kses( $content, $allowed_html, $allowed_protocols );
+}
+
+/**
+ * Filters text content and strips out disallowed HTML including the p tag.
+ *
+ * This function expects unslashed data.
+ *
+ * @since 3.0
+ *
+ * @param string $content Text content to filter.
+ *
+ * @return string Filtered content containing only the allowed HTML.
+ */
+function pods_kses_exclude_p( $content ) {
+	return pods_kses_exclude_tags(
+		$content,
+		'post',
+		[
+			'p' => true,
+		]
+	);
+}
+
+/**
+ * Key the list of objects by name.
+ *
+ * @since 3.1.4
+ *
+ * @param array<int|string, Whatsit|stdClass|WP_Post> $objects The list of objects.
+ *
+ * @return array<string, Whatsit|stdClass|WP_Post> The list objects keyed by name.
+ */
+function pods_objects_keyed_by_name( $objects ) {
+	$new_list = [];
+
+	$objects = array_filter( $objects );
+
+	$names = wp_list_pluck( $objects, 'name' );
+
+	if ( count( $names ) === count( $objects ) ) {
+		$new_list = array_combine( $names, $objects );
+	} else {
+		foreach ( $objects as $object ) {
+			if ( $object instanceof Whatsit ) {
+				$name = $object->get_name();
+			} elseif ( $object instanceof WP_Post ) {
+				$name = $object->post_name;
+			} elseif ( is_object( $object ) && isset( $object->name ) ) {
+				$name = $object->name;
+			} else {
+				continue;
+			}
+
+			$new_list[ $name ] = $object;
+		}
+	}
+
+	return $new_list;
+}
+
+/**
+ * Enforce a URL as safe and fallback to another URL if it is not safe.
+ *
+ * @since 3.2.1.1
+ *
+ * @param string      $url          The URL to enforce as safe.
+ * @param string|null $fallback_url The fallback URL to use if the URL is not valid.
+ *
+ * @return string The safe URL or the fallback URL if that was not valid.
+ */
+function pods_enforce_safe_url( string $url, ?string $fallback_url = null ) {
+	$url = wp_sanitize_redirect( $url );
+
+	if ( null === $fallback_url ) {
+		$fallback_url = pods_current_url();
+	}
+
+	return wp_validate_redirect( $url, $fallback_url );
 }

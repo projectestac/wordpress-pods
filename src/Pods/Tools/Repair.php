@@ -4,7 +4,6 @@ namespace Pods\Tools;
 
 use Exception;
 use Throwable;
-use PodsAPI;
 use PodsForm;
 use Pods\Whatsit\Field;
 use Pods\Whatsit\Group;
@@ -15,17 +14,159 @@ use Pods\Whatsit\Pod;
  *
  * @since 2.9.4
  */
-class Repair {
+class Repair extends Base {
 
 	/**
-	 * @var PodsAPI
+	 * Repair Pod configurations.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param string $mode The repair mode (preview, upgrade, or full).
+	 *
+	 * @return array The results with information about the repair done.
 	 */
-	private $api;
+	public function repair_pods( $mode ) {
+		$this->setup();
+
+		$this->errors = [];
+
+		$is_preview_mode = 'preview' === $mode;
+
+		$results = [];
+
+		$results[ __( 'Check for duplicate Pods in the database', 'pods' ) ] = $this->maybe_resolve_pod_conflicts( $mode );
+
+		// Check if changes were made to the Pod.
+		$changes_made = [] !== array_filter( $results );
+
+		if ( ! $is_preview_mode && $changes_made ) {
+			$this->api->cache_flush_pods();
+		}
+
+		$tool_heading = __( 'Repair results', 'pods' );
+
+		$results['message_html'] = $this->get_message_html( $tool_heading, $results, $mode );
+
+		return $results;
+	}
 
 	/**
-	 * @var array
+	 * Maybe resolve pod conflicts.
+	 *
+	 * @since 3.1.0
+	 *
+	 * @param string $mode The repair mode (preview, upgrade, or full).
+	 *
+	 * @return string[] The label, name, and ID for each pod resolved.
 	 */
-	private $errors = [];
+	protected function maybe_resolve_pod_conflicts( $mode ) {
+		$this->setup();
+
+		// Find any pod that has the same name as another pod.
+		global $wpdb;
+
+		$sql = "
+			SELECT DISTINCT
+				`primary`.`ID` AS `primary_id`,
+				`primary`.`post_name` AS `primary_name`,
+				`duplicate`.`ID` AS `duplicate_id`,
+				`duplicate`.`post_name` AS `duplicate_name`
+			FROM `{$wpdb->posts}` AS `primary`
+			LEFT JOIN `{$wpdb->posts}` AS `duplicate`
+				ON `duplicate`.`post_name` = `primary`.`post_name`
+			WHERE
+				`primary`.`post_type` = %s
+				AND `duplicate`.`ID` != `primary`.`ID`
+				AND `duplicate`.`post_type` = `primary`.`post_type`
+			ORDER BY `primary`.`ID`
+		";
+
+		$duplicate_pods = $wpdb->get_results(
+			$wpdb->prepare(
+				$sql,
+				[
+					'_pods_pod',
+				]
+			)
+		);
+
+		$pods_to_resolve = [];
+
+		$duplicate_ids = [];
+
+		foreach ( $duplicate_pods as $duplicate_pod ) {
+			// Skip if we have already referenced a primary pod.
+			if (
+				isset( $duplicate_ids[ $duplicate_pod->duplicate_id ] )
+				&& $duplicate_ids[ $duplicate_pod->duplicate_id ] === $duplicate_pod->primary_id
+			) {
+				continue;
+			}
+
+			$duplicate_ids[ $duplicate_pod->primary_id ] = $duplicate_pod->duplicate_id;
+
+			if ( ! isset( $pods_to_resolve[ $duplicate_pod->primary_name ] ) ) {
+				$pods_to_resolve[ $duplicate_pod->primary_name ] = [];
+			}
+
+			try {
+				$pod = $this->api->load_pod( [ 'id' => $duplicate_pod->duplicate_id ] );
+
+				if ( $pod ) {
+					$pods_to_resolve[ $duplicate_pod->primary_name ][] = $pod;
+				} else {
+					throw new Exception( __( 'Failed to load duplicate pod to resolve.', 'pods' ) );
+				}
+			} catch ( Throwable $exception ) {
+				$this->errors[] = ucwords( str_replace( '_', ' ', __FUNCTION__ ) ) . ' > ' . $exception->getMessage() . ' (' . $duplicate_pod->duplicate_name . ' - #' . $duplicate_pod->duplicate_id . ' - Primary: ' . $duplicate_pod->primary_name . ' - #' . $duplicate_pod->primary_id . ')';
+			}
+		}
+
+		$resolved_pods = [];
+
+		foreach ( $pods_to_resolve as $primary_pod_name => $pods ) {
+			foreach ( $pods as $pod ) {
+				/** @var Pod $pod */
+				try {
+					if ( 'preview' !== $mode ) {
+						// Prevent renaming the original pod data by using a temp one first, then renaming that.
+						wp_update_post( [
+							'ID'        => $pod->get_id(),
+							'post_name' => '_temp_' . $primary_pod_name . '_' . $pod->get_id(),
+						] );
+
+						// Flush the pod cache.
+						$this->api->cache_flush_pods();
+
+						// Save the pod with the new name.
+						$this->api->save_pod( [
+							'id'       => $pod->get_id(),
+							'old_name' => '_temp_' . $primary_pod_name . '_' . $pod->get_id(),
+							'name'     => $primary_pod_name . '_' . $pod->get_id(),
+							'label'    => $pod->get_label() . ' (' . $pod->get_id() . ')',
+						], false );
+
+						$pod->flush();
+					}
+
+					$resolved_pods[] = sprintf(
+						'%1$s (%2$s: %3$s | %4$s: %5$s | %6$s: %7$d)',
+						$pod->get_label(),
+						__( 'Old Name', 'pods' ),
+						$primary_pod_name,
+						__( 'New Name', 'pods' ),
+						$primary_pod_name . '_' . $pod->get_id(),
+						__( 'ID', 'pods' ),
+						$pod->get_id()
+					);
+				} catch ( Throwable $exception ) {
+					$this->errors[] = ucwords( str_replace( '_', ' ', __FUNCTION__ ) ) . ' > ' . $exception->getMessage() . ' (' . $pod->get_name() . ' - #' . $pod->get_id() . ')';
+				}
+			}
+		}
+
+		return $resolved_pods;
+	}
 
 	/**
 	 * Repair Groups and Fields for a Pod.
@@ -33,14 +174,16 @@ class Repair {
 	 * @since 2.9.4
 	 *
 	 * @param Pod    $pod  The Pod object.
-	 * @param string $mode The repair mode (upgrade or full).
+	 * @param string $mode The repair mode (preview, upgrade, or full).
 	 *
 	 * @return array The results with information about the repair done.
 	 */
 	public function repair_groups_and_fields_for_pod( Pod $pod, $mode ) {
-		$this->api    = pods_api();
+		$this->setup();
+
 		$this->errors = [];
 
+		$is_preview_mode = 'preview' === $mode;
 		$is_upgrade_mode = 'upgrade' === $mode;
 		$is_migrated     = 1 === (int) $pod->get_arg( '_migrated_28' );
 
@@ -48,6 +191,10 @@ class Repair {
 		$group_id = $this->maybe_setup_group_if_no_groups( $pod, $mode );
 
 		$results = [];
+
+		// Maybe fix fields with invalid pod/storage type.
+		$results[ __( 'Fixed pod with invalid pod type', 'pods' ) ]         = $this->maybe_fix_pod_with_invalid_pod_type( $pod, $mode );
+		$results[ __( 'Fixed pod with invalid pod storage type', 'pods' ) ] = $this->maybe_fix_pod_with_invalid_pod_storage_type( $pod, $mode );
 
 		// If no group needed to be created, attempt to find the first group ID.
 		if ( null === $group_id ) {
@@ -64,154 +211,205 @@ class Repair {
 				$group_id = reset( $groups );
 			}
 		} else {
-			$results['maybe_setup_group_if_no_groups'] = __( 'First group created.', 'pods' );
+			$results[ __( 'Setup group if there were no groups', 'pods' ) ] = __( 'First group created.', 'pods' );
 		}
 
 		if ( ! $is_upgrade_mode || $is_migrated ) {
 			// Maybe resolve group conflicts.
-			$results['maybe_resolve_group_conflicts'] = $this->maybe_resolve_group_conflicts( $pod );
+			$results[ __( 'Resolved group conflicts', 'pods' ) ] = $this->maybe_resolve_group_conflicts( $pod, $mode );
 
 			// Maybe resolve field conflicts.
-			$results['maybe_resolve_field_conflicts'] = $this->maybe_resolve_field_conflicts( $pod );
+			$results[ __( 'Resolved field conflicts', 'pods' ) ] = $this->maybe_resolve_field_conflicts( $pod, $mode );
 		}
 
 		// If we have a group to work with, use that.
 		if ( null !== $group_id ) {
 			if ( ! $is_upgrade_mode || $is_migrated ) {
 				// Maybe reassign fields with invalid groups.
-				$results['maybe_reassign_fields_with_invalid_groups'] = $this->maybe_reassign_fields_with_invalid_groups( $pod, $group_id );
+				$results[ __( 'Reassigned fields with invalid groups', 'pods' ) ] = $this->maybe_reassign_fields_with_invalid_groups( $pod, $group_id, $mode );
 			}
 
 			// Maybe reassign orphan fields to the first group.
-			$results['maybe_reassign_orphan_fields'] = $this->maybe_reassign_orphan_fields( $pod, $group_id );
+			$results[ __( 'Reassigned orphan fields', 'pods' ) ] = $this->maybe_reassign_orphan_fields( $pod, $group_id, $mode );
 		}
 
 		// Maybe fix fields with invalid field type.
-		$results['maybe_fix_fields_with_invalid_field_type'] = $this->maybe_fix_fields_with_invalid_field_type( $pod );
+		$results[ __( 'Fixed fields with invalid field type', 'pods' ) ] = $this->maybe_fix_fields_with_invalid_field_type( $pod, $mode );
 
-		// Mark the pod as migrated if upgrading.
-		if ( $is_upgrade_mode ) {
+		// Maybe fix fields with invalid arguments.
+		$results[ __( 'Fixed fields with invalid arguments', 'pods' ) ] = $this->maybe_fix_fields_with_invalid_args( $pod, $mode );
+
+		// Check if changes were made to the Pod.
+		$changes_made = [] !== array_filter( $results );
+
+		// Mark the pod as migrated if upgrading and only save the Pod if changes were made or the migrated tag is not set.
+		if (
+			$is_upgrade_mode
+			&& (
+				$changes_made
+				|| 0 === (int) $pod->get_arg( '_migrated_28', 0 )
+			)
+		) {
 			$pod->set_arg( '_migrated_28', 1 );
 
 			try {
 				$this->api->save_pod( $pod );
 			} catch ( Throwable $exception ) {
-				// Do nothing.
+				pods_debug_log( $exception );
 			}
+
+			// Refresh pod object.
+			$pod->flush();
+		} elseif ( ! $is_preview_mode && $changes_made ) {
+			$this->api->cache_flush_pods( $pod );
+
+			// Refresh pod object.
+			$pod->flush();
 		}
 
-		$this->api->cache_flush_pods( $pod );
+		$tool_heading = sprintf(
+			// translators: %s: The Pod label.
+			__( 'Repair results for %s', 'pods' ),
+			$pod->get_label() . ' (' . $pod->get_name() . ')'
+		);
 
-		$pod->flush();
+		$results['message_html'] = $this->get_message_html( $tool_heading, $results, $mode );
 
-		$results['message_html'] = $this->get_message_html( $pod, $results );
+		if ( $is_upgrade_mode ) {
+			$results['upgraded_pod'] = $pod;
+		}
 
 		return $results;
 	}
 
 	/**
-	 * Get the message HTML from the repair results.
+	 * Maybe fix pods with invalid pod type.
 	 *
-	 * @since 2.9.4
+	 * @since 2.9.15
 	 *
-	 * @param Pod   $pod  The Pod object.
-	 * @param array $results The repair results.
+	 * @param Pod    $pod  The Pod object.
+	 * @param string $mode The repair mode (preview, upgrade, or full).
 	 *
-	 * @return string The message HTML.
+	 * @return string[] The label, name, and ID for each pod fixed.
 	 */
-	protected function get_message_html( Pod $pod, array $results ) {
-		$messages = [
-			sprintf(
-				'<h3>%s</h3>',
-				// translators: The Pod label.
-				sprintf(
-					esc_html__( 'Repair results for %s', 'pods' ),
-					$pod->get_label() . ' (' . $pod->get_name() . ')'
-				)
-			),
-		];
+	protected function maybe_fix_pod_with_invalid_pod_type( Pod $pod, $mode ) {
+		$this->setup();
 
-		if ( ! empty( $results['maybe_setup_group_if_no_groups'] ) ) {
-			$repair_result = $results['maybe_setup_group_if_no_groups'];
+		$supported_pod_types = pods_api()->get_pod_types();
 
-			$messages[] = sprintf(
-				'<h4>%1$s</h4><ul class="ul-disc"><li>%2$s</li></ul>',
-				esc_html__( 'Setup group if there were no groups', 'pods' ),
-				esc_html( $repair_result )
-			);
+		$old_type = $pod->get_type();
+
+		$messages = [];
+
+		if ( ! isset( $supported_pod_types[ $old_type ] ) ) {
+			try {
+				if ( $pod->get_id() <= 0 ) {
+					$this->errors[] = __( 'Unable to repair a Pod that was not registered in the database.', 'pods' );
+
+					return [];
+				}
+
+				if ( 'preview' !== $mode ) {
+					$this->api->save_pod( [
+						'id'   => $pod->get_id(),
+						'type' => 'post_type',
+					] );
+
+					$pod->set_arg( 'type', 'post_type' );
+				}
+
+				$messages[] = sprintf(
+					'%1$s (%2$s: %3$s | %4$s: %5$s | %6$s: %7$d)',
+					$pod->get_label(),
+					__( 'Old Type', 'pods' ),
+					$old_type,
+					__( 'Name', 'pods' ),
+					$pod->get_name(),
+					__( 'ID', 'pods' ),
+					$pod->get_id()
+				);
+			} catch ( Throwable $exception ) {
+				$this->errors[] = ucwords( str_replace( '_', ' ', __FUNCTION__ ) ) . ' > ' . $exception->getMessage() . ' (' . $field->get_name() . ' - #' . $field->get_id() . ')';
+			}
 		}
 
-		if ( ! empty( $results['maybe_resolve_group_conflicts'] ) ) {
-			$repair_result = $results['maybe_resolve_group_conflicts'];
-			$repair_result = array_map( 'esc_html', $repair_result );
+		return $messages;
+	}
 
-			$messages[] = sprintf(
-				'<h4>%1$s</h4><ul class="ul-disc"><li>%2$s</li></ul>',
-				esc_html__( 'Resolved group conflicts', 'pods' ),
-				implode( '</li><li>', $repair_result )
-			);
+	/**
+	 * Maybe fix pods with invalid pod storage type.
+	 *
+	 * @since 2.9.15
+	 *
+	 * @param Pod    $pod  The Pod object.
+	 * @param string $mode The repair mode (preview, upgrade, or full).
+	 *
+	 * @return string[] The label, name, and ID for each pod fixed.
+	 */
+	protected function maybe_fix_pod_with_invalid_pod_storage_type( Pod $pod, $mode ) {
+		$this->setup();
+
+		$supported_storage_types = pods_api()->get_storage_types();
+
+		$old_storage_type = $pod->get_storage( true );
+
+		if ( empty( $old_storage_type ) ) {
+			$old_storage_type = 'n/a';
 		}
 
-		if ( ! empty( $results['maybe_resolve_field_conflicts'] ) ) {
-			$repair_result = $results['maybe_resolve_field_conflicts'];
-			$repair_result = array_map( 'esc_html', $repair_result );
+		$pod_type = $pod->get_type();
 
-			$messages[] = sprintf(
-				'<h4>%1$s</h4><ul class="ul-disc"><li>%2$s</li></ul>',
-				esc_html__( 'Resolved field conflicts', 'pods' ),
-				implode( '</li><li>', $repair_result )
-			);
+		$force_storage_update = false;
+
+		if ( 'meta' === $old_storage_type && in_array( $pod_type, [ 'pod', 'table', 'settings' ], true ) ) {
+			$force_storage_update = true;
 		}
 
-		if ( ! empty( $results['maybe_reassign_fields_with_invalid_groups'] ) ) {
-			$repair_result = $results['maybe_reassign_fields_with_invalid_groups'];
-			$repair_result = array_map( 'esc_html', $repair_result );
+		$new_storage_type = $pod->get_default_storage();
 
-			$messages[] = sprintf(
-				'<h4>%1$s</h4><ul class="ul-disc"><li>%2$s</li></ul>',
-				esc_html__( 'Reassigned fields with invalid groups', 'pods' ),
-				implode( '</li><li>', $repair_result )
-			);
+		$messages = [];
+
+		if ( $force_storage_update || ! isset( $supported_storage_types[ $old_storage_type ] ) ) {
+			try {
+				if ( $pod->get_id() <= 0 ) {
+					$this->errors[] = __( 'Unable to repair a Pod that was not registered in the database.', 'pods' );
+
+					return [];
+				}
+
+				if ( 'preview' !== $mode ) {
+					// Save the pod but don't overwrite the DB table schema if it exists.
+					$this->api->save_pod(
+						[
+							'id'                     => $pod->get_id(),
+							'storage'                => $new_storage_type,
+							'overwrite_table_schema' => false,
+						]
+					);
+
+					$pod->set_arg( 'storage', $new_storage_type );
+				}
+
+				$messages[] = sprintf(
+					'%1$s (%2$s: %3$s | %4$s: %5$s | %6$s: %7$s | %8$s: %9$s | %10$s: %11$d)',
+					$pod->get_label(),
+					__( 'Old Storage Type', 'pods' ),
+					$old_storage_type,
+					__( 'New Storage Type', 'pods' ),
+					$new_storage_type,
+					__( 'Name', 'pods' ),
+					$pod->get_name(),
+					__( 'Type', 'pods' ),
+					$pod_type,
+					__( 'ID', 'pods' ),
+					$pod->get_id()
+				);
+			} catch ( Throwable $exception ) {
+				$this->errors[] = ucwords( str_replace( '_', ' ', __FUNCTION__ ) ) . ' > ' . $exception->getMessage() . ' (' . $pod->get_name() . ' - #' . $pod->get_id() . ')';
+			}
 		}
 
-		if ( ! empty( $results['maybe_reassign_orphan_fields'] ) ) {
-			$repair_result = $results['maybe_reassign_orphan_fields'];
-			$repair_result = array_map( 'esc_html', $repair_result );
-
-			$messages[] = sprintf(
-				'<h4>%1$s</h4><ul class="ul-disc"><li>%2$s</li></ul>',
-				esc_html__( 'Reassigned orphan fields', 'pods' ),
-				implode( '</li><li>', $repair_result )
-			);
-		}
-
-		if ( ! empty( $results['maybe_fix_fields_with_invalid_field_type'] ) ) {
-			$repair_result = $results['maybe_fix_fields_with_invalid_field_type'];
-			$repair_result = array_map( 'esc_html', $repair_result );
-
-			$messages[] = sprintf(
-				'<h4>%1$s</h4><ul class="ul-disc"><li>%2$s</li></ul>',
-				esc_html__( 'Fixed fields with invalid field type', 'pods' ),
-				implode( '</li><li>', $repair_result )
-			);
-		}
-
-		if ( ! empty( $this->errors ) ) {
-			$repair_result = $this->errors;
-			$repair_result = array_map( 'esc_html', $repair_result );
-
-			$messages[] = sprintf(
-				'<h4>%1$s</h4><ul class="ul-disc"><li>%2$s</li></ul>',
-				esc_html__( 'Repair errors', 'pods' ),
-				implode( '</li><li>', $repair_result )
-			);
-		}
-
-		if ( 1 === count( $messages ) ) {
-			$messages[] = esc_html__( 'No repair actions were needed.', 'pods' );
-		}
-
-		return wpautop( implode( "\n\n", $messages ) );
+		return $messages;
 	}
 
 	/**
@@ -225,6 +423,8 @@ class Repair {
 	 * @return int|null The group ID if created, otherwise null if repair not needed.
 	 */
 	protected function maybe_setup_group_if_no_groups( Pod $pod, $mode ) {
+		$this->setup();
+
 		$groups = $pod->get_groups( [
 			'fallback_mode' => false,
 		] );
@@ -288,12 +488,16 @@ class Repair {
 				'name' => $group_name,
 			] ) );
 
-			// Setup first group.
-			$group_id = $this->api->save_group( [
-				'pod'   => $pod,
-				'name'  => $group_name,
-				'label' => $group_label,
-			] );
+			if ( 'preview' !== $mode ) {
+				// Setup first group.
+				$group_id = $this->api->save_group( [
+					'pod'   => $pod,
+					'name'  => $group_name,
+					'label' => $group_label,
+				] );
+			} else {
+				$group_id = 1234567890123456789;
+			}
 
 			if ( $group_id && is_numeric( $group_id ) ) {
 				return $group_id;
@@ -312,11 +516,14 @@ class Repair {
 	 *
 	 * @since 2.9.4
 	 *
-	 * @param Pod $pod The Pod object.
+	 * @param Pod    $pod  The Pod object.
+	 * @param string $mode The repair mode (preview, upgrade, or full).
 	 *
 	 * @return string[] The label, name, and ID for each group resolved.
 	 */
-	protected function maybe_resolve_group_conflicts( Pod $pod ) {
+	protected function maybe_resolve_group_conflicts( Pod $pod, $mode ) {
+		$this->setup();
+
 		// Find any group on the pod that has the same name as another group.
 		global $wpdb;
 
@@ -377,12 +584,14 @@ class Repair {
 			foreach ( $groups as $group ) {
 				/** @var Group $group */
 				try {
-					$this->api->save_group( [
-						'id'       => $group->get_id(),
-						'pod_data' => $pod,
-						'group'    => $group,
-						'new_name' => $group_name . '_' . $group->get_id(),
-					] );
+					if ( 'preview' !== $mode ) {
+						$this->api->save_group( [
+							'id'       => $group->get_id(),
+							'pod_data' => $pod,
+							'group'    => $group,
+							'new_name' => $group_name . '_' . $group->get_id(),
+						] );
+					}
 
 					$resolved_groups[] = sprintf(
 						'%1$s (%2$s: %3$s | %4$s: %5$s | %6$s: %7$d)',
@@ -408,18 +617,23 @@ class Repair {
 	 *
 	 * @since 2.9.4
 	 *
-	 * @param Pod $pod The Pod object.
+	 * @param Pod    $pod  The Pod object.
+	 * @param string $mode The repair mode (preview, upgrade, or full).
 	 *
 	 * @return string[] The label, name, and ID for each field resolved.
 	 */
-	protected function maybe_resolve_field_conflicts( Pod $pod ) {
+	protected function maybe_resolve_field_conflicts( Pod $pod, $mode ) {
+		$this->setup();
+
 		// Find any field on the pod that has the same name as another field.
 		global $wpdb;
 
 		$sql = "
 			SELECT DISTINCT
-				`primary`.`ID`,
-				`primary`.`post_name`
+				`primary`.`ID` AS `primary_id`,
+				`primary`.`post_name` AS `primary_name`,
+				`duplicate`.`ID` AS `duplicate_id`,
+				`duplicate`.`post_name` AS `duplicate_name`
 			FROM `{$wpdb->posts}` AS `primary`
 			LEFT JOIN `{$wpdb->posts}` AS `duplicate`
 				ON `duplicate`.`post_name` = `primary`.`post_name`
@@ -445,48 +659,55 @@ class Repair {
 		$fields_to_resolve = [];
 
 		foreach ( $duplicate_fields as $duplicate_field ) {
-			if ( ! isset( $fields_to_resolve[ $duplicate_field->post_name ] ) ) {
-				$fields_to_resolve[ $duplicate_field->post_name ] = [];
+			if ( ! isset( $fields_to_resolve[ $duplicate_field->primary_name ] ) ) {
+				$fields_to_resolve[ $duplicate_field->primary_name ] = [];
 			}
 
 			try {
-				$field = $this->api->load_field( [ 'id' => $duplicate_field->ID ] );
+				$field = $this->api->load_field( [ 'id' => $duplicate_field->duplicate_id ] );
 
 				if ( $field ) {
-					$fields_to_resolve[ $duplicate_field->post_name ][] = $field;
+					$fields_to_resolve[ $duplicate_field->primary_name ][] = $field;
 				} else {
 					throw new Exception( __( 'Failed to load duplicate field to resolve.', 'pods' ) );
 				}
 			} catch ( Throwable $exception ) {
-				$this->errors[] = ucwords( str_replace( '_', ' ', __FUNCTION__ ) ) . ' > ' . $exception->getMessage() . ' (' . $duplicate_field->post_name . ' - #' . $duplicate_field->ID . ')';
+				$this->errors[] = ucwords( str_replace( '_', ' ', __FUNCTION__ ) ) . ' > ' . $exception->getMessage() . ' (' . $duplicate_field->duplicate_name . ' - #' . $duplicate_field->duplicate_id . ' - Primary: ' . $duplicate_field->primary_name . ' - #' . $duplicate_field->primary_id . ')';
 			}
 		}
 
 		$resolved_fields = [];
 
-		foreach ( $fields_to_resolve as $field_name => $fields ) {
-			if ( 1 < count( $fields ) ) {
-				// Remove the first field.
-				array_shift( $fields );
-			}
-
+		foreach ( $fields_to_resolve as $primary_field_name => $fields ) {
 			foreach ( $fields as $field ) {
 				/** @var Field $field */
 				try {
-					$this->api->save_field( [
-						'id'       => $field->get_id(),
-						'pod_data' => $pod,
-						'field'    => $field,
-						'new_name' => $field_name . '_' . $field->get_id(),
-					], false );
+					if ( 'preview' !== $mode ) {
+						// Prevent renaming the original field data by using a temp one first, then renaming that.
+						wp_update_post( [
+							'ID'        => $field->get_id(),
+							'post_name' => '_temp_' . $primary_field_name . '_' . $field->get_id(),
+						] );
+
+						// Flush the field cache.
+						$this->api->cache_flush_fields();
+
+						// Save the field with the new name.
+						$this->api->save_field( [
+							'id'       => $field->get_id(),
+							'pod_data' => $pod,
+							'field'    => $field,
+							'new_name' => $primary_field_name . '_' . $field->get_id(),
+						], false );
+					}
 
 					$resolved_fields[] = sprintf(
 						'%1$s (%2$s: %3$s | %4$s: %5$s | %6$s: %7$d)',
 						$field->get_label(),
 						__( 'Old Name', 'pods' ),
-						$field_name,
+						$primary_field_name,
 						__( 'New Name', 'pods' ),
-						$field_name . '_' . $field->get_id(),
+						$primary_field_name . '_' . $field->get_id(),
 						__( 'ID', 'pods' ),
 						$field->get_id()
 					);
@@ -504,19 +725,28 @@ class Repair {
 	 *
 	 * @since 2.9.4
 	 *
-	 * @param Pod $pod      The Pod object.
-	 * @param int $group_id The group ID.
+	 * @param Pod    $pod      The Pod object.
+	 * @param int    $group_id The group ID.
+	 * @param string $mode     The repair mode (preview, upgrade, or full).
 	 *
 	 * @return string[] The label, name, and ID for each field reassigned.
 	 */
-	protected function maybe_reassign_fields_with_invalid_groups( Pod $pod, $group_id ) {
+	protected function maybe_reassign_fields_with_invalid_groups( Pod $pod, $group_id, $mode ) {
+		$this->setup();
+
 		// Get all known group IDs.
 		$groups = $pod->get_groups( [
 			'fallback_mode' => false,
 		] );
 
 		$groups = wp_list_pluck( $groups, 'id' );
-		$groups = array_filter( $groups );
+		$groups = array_values( array_filter( $groups ) );
+
+		if ( $group_id ) {
+			$groups[] = $group_id;
+		}
+
+		$groups = array_unique( $groups );
 
 		$fields = $pod->get_fields( [
 			'fallback_mode' => false,
@@ -529,7 +759,7 @@ class Repair {
 			],
 		] );
 
-		return $this->reassign_fields_to_group( $fields, $group_id, $pod );
+		return $this->reassign_fields_to_group( $fields, $group_id, $pod, $mode );
 	}
 
 	/**
@@ -537,18 +767,21 @@ class Repair {
 	 *
 	 * @since 2.9.4
 	 *
-	 * @param Pod $pod      The Pod object.
-	 * @param int $group_id The group ID.
+	 * @param Pod    $pod      The Pod object.
+	 * @param int    $group_id The group ID.
+	 * @param string $mode     The repair mode (preview, upgrade, or full).
 	 *
 	 * @return string[] The label, name, and ID for each field reassigned.
 	 */
-	protected function maybe_reassign_orphan_fields( Pod $pod, $group_id ) {
+	protected function maybe_reassign_orphan_fields( Pod $pod, $group_id, $mode ) {
+		$this->setup();
+
 		$fields = $pod->get_fields( [
 			'fallback_mode' => false,
 			'group'         => null,
 		] );
 
-		return $this->reassign_fields_to_group( $fields, $group_id, $pod );
+		return $this->reassign_fields_to_group( $fields, $group_id, $pod, $mode );
 	}
 
 	/**
@@ -556,24 +789,33 @@ class Repair {
 	 *
 	 * @since 2.9.4
 	 *
-	 * @param Pod $pod      The Pod object.
-	 * @param int $group_id The group ID.
+	 * @param Pod    $pod      The Pod object.
+	 * @param int    $group_id The group ID.
+	 * @param string $mode     The repair mode (preview, upgrade, or full).
 	 *
 	 * @return string[] The label, name, and ID for each field reassigned.
 	 */
-	protected function reassign_fields_to_group( $fields, $group_id, $pod ) {
+	protected function reassign_fields_to_group( $fields, $group_id, $pod, $mode ) {
+		$this->setup();
+
 		$reassigned_fields = [];
 
 		foreach ( $fields as $field ) {
-			try {
-				$this->api->save_field( [
-					'id'           => $field->get_id(),
-					'pod_data'     => $pod,
-					'field'        => $field,
-					'new_group_id' => $group_id,
-				] );
+			if ( $field->get_arg( 'group' ) === $group_id ) {
+				continue;
+			}
 
-				$field->set_arg( 'group', $group_id );
+			try {
+				if ( 'preview' !== $mode ) {
+					$this->api->save_field( [
+						'id'           => $field->get_id(),
+						'pod_data'     => $pod,
+						'field'        => $field,
+						'new_group_id' => $group_id,
+					] );
+
+					$field->set_arg( 'group', $group_id );
+				}
 
 				$reassigned_fields[] = sprintf(
 					'%1$s (%2$s: %3$s | %4$s: %5$d)',
@@ -596,11 +838,14 @@ class Repair {
 	 *
 	 * @since 2.9.4
 	 *
-	 * @param Pod $pod The Pod object.
+	 * @param Pod    $pod  The Pod object.
+	 * @param string $mode The repair mode (preview, upgrade, or full).
 	 *
 	 * @return string[] The label, name, and ID for each field fixed.
 	 */
-	protected function maybe_fix_fields_with_invalid_field_type( Pod $pod ) {
+	protected function maybe_fix_fields_with_invalid_field_type( Pod $pod, $mode ) {
+		$this->setup();
+
 		$supported_field_types = PodsForm::field_types_list();
 
 		$fields = $pod->get_fields( [
@@ -629,14 +874,16 @@ class Repair {
 					$old_type = __( 'N/A', 'pods' );
 				}
 
-				$this->api->save_field( [
-					'id'       => $field->get_id(),
-					'pod_data' => $pod,
-					'field'    => $field,
-					'type'     => 'text',
-				] );
+				if ( 'preview' !== $mode ) {
+					$this->api->save_field( [
+						'id'       => $field->get_id(),
+						'pod_data' => $pod,
+						'field'    => $field,
+						'type'     => 'text',
+					] );
 
-				$field->set_arg( 'type', 'text' );
+					$field->set_arg( 'type', 'text' );
+				}
 
 				$fixed_fields[] = sprintf(
 					'%1$s (%2$s: %3$s | %4$s: %5$s | %6$s: %7$d)',
@@ -654,6 +901,151 @@ class Repair {
 		}
 
 		return $fixed_fields;
+	}
+
+	/**
+	 * Maybe fix pod fields with invalid arguments.
+	 *
+	 * @since 3.0.4
+	 *
+	 * @param Pod    $pod  The Pod object.
+	 * @param string $mode The repair mode (preview, upgrade, or full).
+	 *
+	 * @return string[] The label, name, and ID for each field fixed.
+	 */
+	protected function maybe_fix_fields_with_invalid_args( Pod $pod, $mode ) {
+		$this->setup();
+
+		$invalid_args = [
+			'conditional_logic',
+			'attributes',
+			'grouped',
+			'depends-on',
+			'depends-on-any',
+			'depends-on-multi',
+			'excludes-on',
+			'wildcard-on',
+		];
+
+		$fixed_fields = [];
+
+		foreach ( $invalid_args as $invalid_arg ) {
+			$meta_query_check = [
+				'key'     => $invalid_arg,
+				'compare' => 'EXISTS',
+			];
+
+			if ( 'conditional_logic' === $invalid_arg ) {
+				$meta_query_check['value']   = 'a:0:{}';
+				$meta_query_check['compare'] = 'LIKE';
+			}
+
+			$fields = $pod->get_fields( [
+				'fallback_mode' => false,
+				'meta_query'    => [
+					$meta_query_check,
+				],
+			] );
+
+			foreach ( $fields as $field ) {
+				$fixed_field = $this->maybe_fix_fields_with_invalid_args_for_field( $pod, $field, $invalid_arg, $mode );
+
+				if ( $fixed_field ) {
+					$fixed_fields[] = $fixed_field;
+				}
+			}
+		}
+
+		return $fixed_fields;
+	}
+
+	/**
+	 * Maybe fix a field with invalid arguments.
+	 *
+	 * @since 3.0.4
+	 *
+	 * @param Pod    $pod         The Pod object.
+	 * @param Field  $field       The Field object.
+	 * @param string $invalid_arg The invalid argument.
+	 * @param string $mode        The repair mode (preview, upgrade, or full).
+	 *
+	 * @return string[]|false The label, name, and ID for the field fixed, or false if not fixed.
+	 */
+	protected function maybe_fix_fields_with_invalid_args_for_field( Pod $pod, Field $field, string $invalid_arg, $mode ) {
+		$this->setup();
+
+		$field_id = $field->get_id();
+
+		if ( empty( $field_id ) ) {
+			return false;
+		}
+
+		$invalid_args = [
+			'conditional_logic',
+			'attributes',
+			'grouped',
+			'depends-on',
+			'depends-on-any',
+			'depends-on-multi',
+			'excludes-on',
+			'wildcard-on',
+		];
+
+		try {
+			$found_invalid_args = [
+				$invalid_arg => null,
+			];
+
+			foreach ( $invalid_args as $other_invalid_arg ) {
+				$arg_value = $field->get_arg( $other_invalid_arg, null, false, true );
+
+				if ( null !== $arg_value ) {
+					if (
+						'conditional_logic' !== $invalid_arg
+						&& 'conditional_logic' === $other_invalid_arg
+						&& (
+							empty( $arg_value )
+							|| is_array( $arg_value )
+						)
+					) {
+						continue;
+					}
+
+					$found_invalid_args[ $other_invalid_arg ] = $arg_value;
+				}
+			}
+
+			if ( 'preview' !== $mode ) {
+				foreach ( $found_invalid_args as $found_invalid_arg => $arg_value ) {
+					if ( 'conditional_logic' === $found_invalid_arg ) {
+						update_post_meta( $field_id, 'enable_conditional_logic', 0 );
+
+						$field->set_arg( 'enable_conditional_logic', 0 );
+					}
+
+					delete_post_meta( $field_id, $found_invalid_arg );
+
+					$field->set_arg( $found_invalid_arg, null );
+				}
+
+				pods_api()->cache_flush_fields();
+			}
+
+			return sprintf(
+				'%1$s (%2$s: [%3$s] | %4$s: %5$s | %6$s: %7$d)',
+				$field->get_label(),
+				__( 'Fixed invalid conditional logic args', 'pods' ),
+				implode( ', ', array_keys( $found_invalid_args ) ),
+				__( 'Name', 'pods' ),
+				$field->get_name(),
+				__( 'ID', 'pods' ),
+				$field->get_id()
+			);
+		} catch ( Throwable $exception ) {
+			$this->errors[] = ucwords( str_replace( '_', ' ', __FUNCTION__ ) ) . ' > ' . $exception->getMessage() . ' (' . $field->get_name() . ' - #' . $field->get_id() . ')';
+		}
+
+		return false;
 	}
 
 }

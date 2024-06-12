@@ -14,9 +14,8 @@ use Pods\REST\V1\Endpoints\Pod_Slug;
 use Pods\REST\V1\Endpoints\Pods;
 use Pods\REST\V1\Endpoints\Swagger_Documentation;
 use Pods\REST\V1\Validator\Base as Base_Validator;
-use Tribe__Documentation__Swagger__Builder_Interface as Swagger_Builder_Interface;
+use Pods\REST\Interfaces\Swagger\Builder_Interface;
 use WP_REST_Server;
-use tad_DI52_ServiceProvider;
 
 /**
  * Class Service_Provider
@@ -25,7 +24,7 @@ use tad_DI52_ServiceProvider;
  *
  * @since 2.8.0
  */
-class Service_Provider extends tad_DI52_ServiceProvider {
+class Service_Provider extends \Pods\Service_Provider_Base {
 
 	/**
 	 * Binds and sets up implementations.
@@ -41,11 +40,13 @@ class Service_Provider extends tad_DI52_ServiceProvider {
 		$this->container->singleton( 'pods.rest-v1.main', Main::class );
 		$this->container->singleton( 'pods.rest-v1.messages', Messages::class );
 		$this->container->singleton( 'pods.rest-v1.validator', Base_Validator::class );
-		$this->container->singleton( 'pods.rest-v1.repository', Post_Repository::class );
 
-		$messages        = pods_container( 'pods.rest-v1.messages' );
+		$messages  = pods_container( 'pods.rest-v1.messages' );
+		$validator = pods_container( 'pods.rest-v1.validator' );
+
+		$this->container->singleton( 'pods.rest-v1.repository', new Post_Repository( $messages ) );
+
 		$post_repository = pods_container( 'pods.rest-v1.repository' );
-		$validator       = pods_container( 'pods.rest-v1.validator' );
 
 		$endpoints = $this->get_endpoints();
 
@@ -115,7 +116,7 @@ class Service_Provider extends tad_DI52_ServiceProvider {
 					$endpoint_obj->register_routes( $this->namespace, true );
 				}
 			} catch ( Exception $exception ) {
-				// Do nothing.
+				pods_debug_log( $exception );
 			}
 		}
 
@@ -127,10 +128,10 @@ class Service_Provider extends tad_DI52_ServiceProvider {
 	 *
 	 * @since 2.8.0
 	 *
-	 * @return Swagger_Builder_Interface
+	 * @return Builder_Interface
 	 */
 	protected function register_endpoint_documentation() {
-		/** @var Swagger_Builder_Interface $endpoint */
+		/** @var Builder_Interface $endpoint */
 		$endpoint = pods_container( 'pods.rest-v1.endpoints.documentation' );
 
 		register_rest_route( $this->namespace, '/doc', [
@@ -139,7 +140,7 @@ class Service_Provider extends tad_DI52_ServiceProvider {
 			'permission_callback' => '__return_true',
 		] );
 
-		//$endpoint->register_definition_provider( 'XYZ', new Tribe__REST__V1__Documentation__XYZ_Definition_Provider() );
+		//$endpoint->register_definition_provider( 'XYZ', new XYZ_Definition_Provider() );
 
 		$endpoint->register_documentation_provider( '/doc', $endpoint );
 

@@ -1,7 +1,4 @@
 <?php
-if ( class_exists( 'Pods_PFAT_Frontend' ) ) {
-	return;
-}
 
 /**
  * Class Pods_Templates_Auto_Template_Front_End
@@ -55,7 +52,7 @@ class Pods_Templates_Auto_Template_Front_End {
 		foreach ( $possible_pods as $pod_name => $pod ) {
 			$filter = pods_v( 'archive_filter', $pod, '', true );
 			if ( $filter ) {
-				$this->filtered_content[ $filter ] = 10.5;
+				$this->filtered_content[ $filter ] = 10;
 			}
 		}
 
@@ -78,7 +75,7 @@ class Pods_Templates_Auto_Template_Front_End {
 			// No need to check for default hooks, this is already done in auto_pods().
 			$filter = pods_v( 'single_filter', $possible_pods[ $pod ], '', true );
 			if ( $filter ) {
-				$this->filtered_content[ $filter ] = 10.5;
+				$this->filtered_content[ $filter ] = 10;
 			}
 		}
 
@@ -365,6 +362,13 @@ class Pods_Templates_Auto_Template_Front_End {
 			$obj = get_post();
 		}
 
+		// Check if the post is password protected.
+		if ( $obj instanceof WP_Post && post_password_required( $obj ) ) {
+			$running = false;
+
+			return $content;
+		}
+
 		if ( null !== $obj ) {
 			$pod_info = $this->get_pod_info( $obj );
 
@@ -635,7 +639,7 @@ class Pods_Templates_Auto_Template_Front_End {
 			if ( isset( $template ) ) {
 				global $frontier_styles, $frontier_scripts;
 
-				$template_post = pods()->api->load_template( array( 'name' => $template ) );
+				$template_post = pods_api()->load_template( array( 'name' => $template ) );
 
 				if ( ! empty( $template_post['id'] ) ) {
 					// Got a template - check for styles & scripts.

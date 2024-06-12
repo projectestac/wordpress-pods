@@ -13,7 +13,6 @@ add_filter( 'pods_templates_post_template', 'frontier_end_template', 25, 4 );
 add_filter( 'pods_templates_do_template', 'frontier_do_shortcode', 25, 1 );
 
 // template shortcode handlers
-add_shortcode( 'pod_sub_template', 'frontier_do_subtemplate' );
 add_shortcode( 'pod_once_template', 'frontier_template_once_blocks' );
 add_shortcode( 'pod_after_template', 'frontier_template_blocks' );
 add_shortcode( 'pod_before_template', 'frontier_template_blocks' );
@@ -171,16 +170,16 @@ function frontier_if_block( $attributes, $code ) {
 			return frontier_do_shortcode( $template );
 		}
 
-		$first_character = substr( $attributes['value'], 0, 1 );
+		$first_character = $attributes['value'] ? substr( (string) $attributes['value'], 0, 1 ) : null;
 
 		// check if + or - are present
 		if ( '+' === $first_character ) {
 			// is greater
-			$attributes['value']   = (float) substr( $attributes['value'], 1 ) + 1;
+			$attributes['value']   = (float) substr( (string) $attributes['value'], 1 ) + 1;
 			$attributes['compare'] = '>';
 		} elseif ( '-' === $first_character ) {
 			// is smaller
-			$attributes['value']   = (float) substr( $attributes['value'], 1 ) - 1;
+			$attributes['value']   = (float) substr( (string) $attributes['value'], 1 ) - 1;
 			$attributes['compare'] = '<';
 		}
 
@@ -475,7 +474,7 @@ function frontier_do_subtemplate( $atts, $content ) {
 		elseif ( 'taxonomy' === $field['type'] || in_array( $field['pick_object'], $object_types, true ) ) {
 			// Match any Pod object or taxonomy
 			foreach ( $entries as $key => $entry ) {
-				$subpod = pods( $field['pick_val'] );
+				$subpod = pods_get_instance( $field['pick_val'] );
 
 				if ( ! $subpod || ! $subpod->valid() ) {
 					continue;
@@ -503,12 +502,14 @@ function frontier_do_subtemplate( $atts, $content ) {
 					$target_id = $entry['term_id'];
 				}
 
-				$out .= pods_shortcode(
+				$out .= pods_shortcode_run_safely(
 					array(
 						'name'  => $field['pick_val'],
 						'slug'  => $target_id,
 						'index' => $key,
-					), $template
+					),
+					$template,
+					false
 				);
 
 			}//end foreach
@@ -599,7 +600,6 @@ function frontier_do_subtemplate( $atts, $content ) {
  * @since 2.7.0
  */
 function frontier_pseudo_magic_tags( $template, $data, $pod = null, $skip_unknown = false ) {
-
 	return preg_replace_callback(
 		'/({@(.*?)})/m', function ( $tag ) use ( $pod, $data, $skip_unknown ) {
 
@@ -660,7 +660,7 @@ function frontier_pseudo_magic_tags( $template, $data, $pod = null, $skip_unknow
 				$value = pods_serial_comma(
 					$value, array(
 						'field'  => $field_name,
-						'fields' => $this->fields,
+						'fields' => $pod->fields,
 					)
 				);
 			}
@@ -695,6 +695,10 @@ function frontier_prefilter_template( $code, $template, $pod ) {
 		'after'  => 'pod_after_template',
 		'if'     => 'pod_if_field',
 	);
+
+	if ( ! shortcode_exists( 'pod_sub_template' ) ) {
+		add_shortcode( 'pod_sub_template', 'frontier_do_subtemplate' );
+	}
 
 	$commands = array_merge( $commands, get_option( 'pods_frontier_extra_commands', array() ) );
 

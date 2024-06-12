@@ -2,6 +2,11 @@
 
 use Pods\Tools\Repair;
 
+// Don't load directly.
+if ( ! defined( 'ABSPATH' ) || ! pods_is_admin( 'pods_settings' ) ) {
+	die( '-1' );
+}
+
 global $wpdb;
 
 $pods_api = pods_api();
@@ -9,7 +14,7 @@ $pods_api = pods_api();
 $all_pods = $pods_api->load_pods();
 
 if ( isset( $_POST['_wpnonce'] ) && false !== wp_verify_nonce( $_POST['_wpnonce'], 'pods-settings' ) ) {
-	if ( isset( $_POST['pods_repair_pod'] ) ) {
+	if ( isset( $_POST['pods_repair_pod'] ) || isset( $_POST['pods_repair_pod_preview'] ) ) {
 		$pod_name = pods_v( 'pods_field_repair_pod', 'post' );
 
 		if ( is_array( $pod_name ) ) {
@@ -41,14 +46,32 @@ if ( isset( $_POST['_wpnonce'] ) && false !== wp_verify_nonce( $_POST['_wpnonce'
 				if ( empty( $pod ) ) {
 					pods_message( __( 'Pod not found.', 'pods' ) . ' (' . $pod_to_repair . ')', 'error' );
 				} else {
-					$repair = pods_container( Repair::class );
+					$tool = pods_container( Repair::class );
 
-					$results = $repair->repair_groups_and_fields_for_pod( $pod, 'full' );
+					$mode = 'full';
+
+					if ( ! empty( $_POST['pods_repair_pod_preview'] ) ) {
+						$mode = 'preview';
+					}
+
+					$results = $tool->repair_groups_and_fields_for_pod( $pod, $mode );
 
 					pods_message( $results['message_html'] );
 				}
 			}
 		}
+	} elseif ( isset( $_POST['pods_repair_pods'] ) || isset( $_POST['pods_repair_pods_preview'] ) ) {
+		$tool = pods_container( Repair::class );
+
+		$mode = 'full';
+
+		if ( ! empty( $_POST['pods_repair_pods_preview'] ) ) {
+			$mode = 'preview';
+		}
+
+		$results = $tool->repair_pods( $mode );
+
+		pods_message( $results['message_html'] );
 	} elseif ( isset( $_POST['pods_recreate_tables'] ) ) {
 		pods_upgrade()->delta_tables();
 
@@ -72,6 +95,7 @@ if ( isset( $_POST['_wpnonce'] ) && false !== wp_verify_nonce( $_POST['_wpnonce'
 	<li><?php esc_html_e( 'All orphaned Fields that belong to a Group that no longer exists will be auto-assigned to the first available Group', 'pods' ); ?></li>
 	<li><?php esc_html_e( 'All orphaned Fields that do not belong to a Group will be auto-assigned to the first available Group', 'pods' ); ?></li>
 	<li><?php esc_html_e( 'All Fields that have an invalid Field type set will be changed to Plain Text', 'pods' ); ?></li>
+	<li><?php esc_html_e( 'All Fields that have invalid arguments set will have those arguments removed (conditional logic saved with serialized data and other arguments not intended for the DB used by early Pods 2.x releases)', 'pods' ); ?></li>
 </ul>
 
 <?php
@@ -127,10 +151,35 @@ $repair_pods['__all_pods'] = '-- ' . __( 'Run Repair for All Pods', 'pods' ) . '
 		?>
 		<input type="submit" class="button button-primary" name="pods_repair_pod"
 			value=" <?php esc_attr_e( 'Repair Pod, Groups, and Fields', 'pods' ); ?> " onclick="return confirm( '<?php echo esc_js( $confirm ); ?>' );" />
+		<input type="submit" class="button button-secondary" name="pods_repair_pod_preview"
+			value=" <?php esc_attr_e( 'Preview (no changes will be made)', 'pods' ); ?> " />
 	</p>
 <?php else : ?>
 	<p><em><?php esc_html_e( 'No Pods available to repair.', 'pods' ); ?></em></p>
 <?php endif; ?>
+
+<hr />
+
+<h3><?php esc_html_e( 'Repair Pod configurations', 'pods' ); ?></h3>
+
+<p><?php esc_html_e( 'This will repair pod configurations themselves.', 'pods' ); ?></p>
+<h4><?php esc_html_e( 'What you can expect', 'pods' ); ?></h4>
+<ul class='ul-disc'>
+	<li><?php esc_html_e( 'All Pods with conflicting names will be renamed to prevent conflicts with other registered Pods', 'pods' ); ?></li>
+</ul>
+
+<p class='submit'>
+	<?php
+	$confirm = esc_html__( 'Are you sure you want to do this?', 'pods' )
+			   . "\n\n" . esc_html__( 'This is a good time to make sure you have a backup.', 'pods' )
+			   . "\n\n" . esc_html__( 'We will be making a few repairs to your configuration that should not be destructive to your data but you should be always have a backup just in case.', 'pods' );
+	?>
+	<input type="submit" class="button button-primary" name="pods_repair_pods"
+		   value=" <?php esc_attr_e( 'Repair Pod configurations', 'pods' ); ?> "
+		   onclick="return confirm( '<?php echo esc_js( $confirm ); ?>' );"/>
+	<input type="submit" class="button button-secondary" name="pods_repair_pods_preview"
+		   value=" <?php esc_attr_e( 'Preview (no changes will be made)', 'pods' ); ?> "/>
+</p>
 
 <hr />
 
