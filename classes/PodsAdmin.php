@@ -2177,6 +2177,14 @@ class PodsAdmin {
 	 * @since 2.7.17
 	 */
 	public function admin_manage_callouts() {
+
+		// XTEC ************ AFEGIT - Hidden self-promotion content
+		// 2021.05.10 @aginard
+		if ( ! is_xtec_super_admin() ) {
+			return ;
+		}
+		// ************ FI
+
 		static $did_callout = false;
 
 		if ( $did_callout ) {
