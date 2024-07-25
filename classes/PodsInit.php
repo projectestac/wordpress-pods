@@ -581,7 +581,7 @@ class PodsInit {
 		 *
 		 * @since 2.7.23
 		 *
-		 * @param bool $suffix_min Minimized script suffix.
+		 * @param string $suffix_min Minimized script suffix.
 		 */
 		do_action( 'pods_before_enqueue_scripts', $suffix_min );
 
@@ -684,6 +684,17 @@ class PodsInit {
 					'pods-i18n',
 				),
 				'1.0.8',
+				true
+			);
+		}
+
+		// WordPress pre-6.6 compatibility for react-jsx-runtime.
+		if ( ! wp_script_is( 'react-jsx-runtime', 'registered' ) ) {
+			wp_register_script(
+				'react-jsx-runtime',
+				PODS_URL . 'ui/js/react-jsx-runtime.js',
+				[ 'react' ],
+				'18.3.0',
 				true
 			);
 		}
@@ -844,7 +855,7 @@ class PodsInit {
 		 *
 		 * @since 2.7.23
 		 *
-		 * @param bool $suffix_min Minimized script suffix.
+		 * @param string $suffix_min Minimized script suffix.
 		 */
 		do_action( 'pods_after_enqueue_scripts', $suffix_min );
 	}
@@ -1818,7 +1829,7 @@ class PodsInit {
 	/**
 	 * Filter whether Quick Edit should be enabled for the given post type.
 	 *
-	 * @since TBD
+	 * @since 3.0.9
 	 *
 	 * @param bool   $enable    Whether to enable the Quick Edit functionality.
 	 * @param string $post_type The post type name.
@@ -1840,7 +1851,7 @@ class PodsInit {
 	/**
 	 * Filter whether Quick Edit should be enabled for the given taxonomy.
 	 *
-	 * @since TBD
+	 * @since 3.0.9
 	 *
 	 * @param bool   $enable   Whether to enable the Quick Edit functionality.
 	 * @param string $taxonomy The taxonomy name.
@@ -2065,7 +2076,7 @@ class PodsInit {
 				// Remove HTML tags and strip script/style tag contents.
 				wp_strip_all_tags(
 					// Decode potential entities at the first level to so HTML tags can be removed.
-					htmlspecialchars_decode( $label )
+					htmlspecialchars_decode( (string) $label )
 				)
 			);
 		}, $labels );
@@ -2339,22 +2350,6 @@ class PodsInit {
 					// translators: %s: Pod page label.
 					__( 'Cannot delete pod page "%s"', 'pods' ),
 					$page['name']
-				), 'error' );
-			}
-		}
-
-		$helpers = $api->load_helpers();
-
-		foreach ( $helpers as $helper ) {
-			try {
-				$api->delete_helper( array( 'name' => $helper['name'] ) );
-			} catch ( Exception $exception ) {
-				pods_debug_log( $exception );
-
-				pods_message( sprintf(
-					// translators: %s: Pod helper label.
-					__( 'Cannot delete pod helper "%s"', 'pods' ),
-					$helper['name']
 				), 'error' );
 			}
 		}
